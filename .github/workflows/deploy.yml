@@ -70,11 +70,17 @@ jobs:
           HAIKU_MODEL: ${{ vars.HAIKU_MODEL }}
           AUTH_DOMAIN_PREFIX: ${{ vars.AUTH_DOMAIN_PREFIX }}
           SAML_METADATA_URL: ${{ vars.SAML_METADATA_URL }}
+          ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
+          MONTHLY_BUDGET_USD: ${{ vars.MONTHLY_BUDGET_USD }}
+          COST_CENTRE: ${{ vars.COST_CENTRE }}
         run: |
           args=(-c account="$ACCOUNT_ID" -c region="$REGION" -c opusModel="$OPUS_MODEL" -c sonnetModel="$SONNET_MODEL")
           if [ -n "$HAIKU_MODEL" ]; then args+=(-c haikuModel="$HAIKU_MODEL"); fi
           if [ -n "$AUTH_DOMAIN_PREFIX" ]; then args+=(-c authDomainPrefix="$AUTH_DOMAIN_PREFIX"); fi
           if [ -n "$SAML_METADATA_URL" ]; then args+=(-c samlMetadataUrl="$SAML_METADATA_URL"); fi
+          if [ -n "$ALARM_EMAIL" ]; then args+=(-c alarmEmail="$ALARM_EMAIL"); fi
+          if [ -n "$MONTHLY_BUDGET_USD" ]; then args+=(-c monthlyBudgetUsd="$MONTHLY_BUDGET_USD"); fi
+          if [ -n "$COST_CENTRE" ]; then args+=(-c costCentre="$COST_CENTRE"); fi
           cdk deploy AgentPipeline "${args[@]}" \
             --method="$METHOD" --change-set-name agent-pipeline-release \
             --require-approval never --outputs-file outputs.json

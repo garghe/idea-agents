@@ -43,6 +43,10 @@ class AgentOutputError(RuntimeError):
     """The agent did not return a usable output, even after the retry."""
 
 
+class AgentLimitError(AgentOutputError):
+    """The agent hit its spend or turn cap. Never retried: a retry would spend the same again."""
+
+
 class StageRunner:
     def __init__(self, catalogue: Catalogue, store: CaseStore, client: AgentClient,
                  work_root: Path | None = None, keep_workspaces: bool = False):
@@ -150,13 +154,19 @@ class StageRunner:
         schema = self.catalogue.envelope_schema
         system_prompt = role.prompt + HOUSE_RULES
         task = self.build_task(case, stage_id, role, round_no, ws)
-        retries = self.catalogue.pipeline.limits.output_retries
+        limits = self.catalogue.pipeline.limits
+        retries = limits.output_retries
         session = None
         problems: list[str] = []
 
         for attempt in range(1, retries + 2):
+            # A run may spend its role budget, but never more than what is left of the case budget.
+            left = round(limits.case_budget_usd - self.store.total_cost(case["id"]), 4)
+            if left <= 0:
+                raise BudgetExceeded(f"case {case['id']} has used its ${limits.case_budget_usd:.2f} budget")
+            budget = min(role.budget_usd, left)
             started = now_iso()
-            result = self.client.run(role, system_prompt, task, ws, schema, resume=session)
+            result = self.client.run(role, system_prompt, task, ws, schema, resume=session, budget_usd=budget)
             envelope = result.output
             problems = [result.error] if result.error else []
             if envelope is None:
@@ -171,7 +181,11 @@ class StageRunner:
                 "session_id": result.session_id, "started_at": started, "ended_at": now_iso(),
                 "status": (envelope or {}).get("status") if not problems else "invalid",
                 "summary": (envelope or {}).get("summary"), "problems": problems,
+                "budget_usd": budget, "limit_hit": result.limit_hit,
             })
+            if result.limit_hit:
+                raise AgentLimitError(f"{role.name} hit its {result.limit_hit} cap "
+                                      f"(${budget:.2f}, {role.max_turns} turns); not retried")
             if not problems:
                 return envelope
             log.warning("%s output rejected (attempt %d): %s", role.name, attempt, problems)

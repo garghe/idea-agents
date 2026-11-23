@@ -8,7 +8,10 @@
                                        │
                                        └── S3 (case documents, versioned) + DynamoDB (case records)
 
-The state machine definition is generated from catalogue/pipeline.yaml.
+  CloudWatch alarms and an optional AWS Budgets limit ── SNS ── email
+
+The state machine definition is generated from catalogue/pipeline.yaml. The README maps each part
+of this stack to the AWS Well-Architected pillars.
 """
 
 from __future__ import annotations
@@ -16,10 +19,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack, Tags
 from aws_cdk import aws_apigateway as apigw
+from aws_cdk import aws_budgets as budgets
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
+from aws_cdk import aws_cloudwatch as cloudwatch
+from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ec2 as ec2
@@ -31,6 +37,8 @@ from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_secretsmanager as secretsmanager
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subs
 from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_stepfunctions as sfn
 from constructs import Construct
@@ -41,15 +49,47 @@ from agentpipe.config import PipelineConfig, pipeline_summary
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTAINER_NAME = "runner"
 PORTAL_URL_PARAMETER = "/agent-pipeline/portal-url"
+LOG_RETENTION = logs.RetentionDays.SIX_MONTHS
 
 
 class PipelineStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, *, pipeline: PipelineConfig,
                  model_overrides: dict[str, str] | None = None, auth_domain_prefix: str | None = None,
                  saml_metadata_url: str | None = None, saml_provider_name: str = "CorporateSSO",
-                 **kwargs) -> None:
+                 alarm_email: str | None = None, monthly_budget_usd: float | None = None,
+                 cost_centre: str | None = None, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
         summary = pipeline_summary(pipeline)
+
+        # ---------------------------------------------------------------- tags (cost allocation)
+        Tags.of(self).add("Project", "agent-pipeline")
+        if cost_centre:
+            Tags.of(self).add("CostCentre", cost_centre)
+
+        # ---------------------------------------------------------------- alerts
+        alerts = sns.Topic(self, "Alerts", display_name="Agent pipeline alerts", enforce_ssl=True)
+        alerts.add_to_resource_policy(iam.PolicyStatement(
+            principals=[iam.ServicePrincipal("budgets.amazonaws.com")],
+            actions=["SNS:Publish"], resources=[alerts.topic_arn]))
+        if alarm_email:
+            alerts.add_subscription(subs.EmailSubscription(alarm_email))
+        alarm_action = cw_actions.SnsAction(alerts)
+
+        def alarm(name: str, metric: cloudwatch.IMetric, description: str) -> None:
+            a = cloudwatch.Alarm(
+                self, name, metric=metric, threshold=1, evaluation_periods=1,
+                comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+                treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING, alarm_description=description)
+            a.add_alarm_action(alarm_action)
+
+        # ---------------------------------------------------------------- audit logs bucket
+        log_bucket = s3.Bucket(
+            self, "AccessLogs", enforce_ssl=True, encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            object_ownership=s3.ObjectOwnership.OBJECT_WRITER,  # CloudFront standard logs need ACLs
+            lifecycle_rules=[s3.LifecycleRule(expiration=Duration.days(365))],
+            removal_policy=RemovalPolicy.RETAIN,
+        )
 
         # ---------------------------------------------------------------- network
         # Isolated subnets: no internet gateway, no NAT. AWS services are reached through endpoints.
@@ -58,6 +98,8 @@ class PipelineStack(Stack):
             subnet_configuration=[ec2.SubnetConfiguration(
                 name="isolated", subnet_type=ec2.SubnetType.PRIVATE_ISOLATED, cidr_mask=24)],
         )
+        vpc.add_flow_log("FlowLogs", destination=ec2.FlowLogDestination.to_cloud_watch_logs(
+            logs.LogGroup(self, "VpcFlowLogs", retention=LOG_RETENTION)))
         vpc.add_gateway_endpoint("S3", service=ec2.GatewayVpcEndpointAwsService.S3)
         vpc.add_gateway_endpoint("DynamoDb", service=ec2.GatewayVpcEndpointAwsService.DYNAMODB)
         for name, service in {
@@ -68,14 +110,18 @@ class PipelineStack(Stack):
             "StepFunctions": ec2.InterfaceVpcEndpointAwsService.STEP_FUNCTIONS,  # report back
         }.items():
             vpc.add_interface_endpoint(name, service=service, private_dns_enabled=True)
-        runner_sg = ec2.SecurityGroup(self, "RunnerSg", vpc=vpc,
-                                      description="Agent runner tasks: no inbound; outbound to VPC endpoints")
+        runner_sg = ec2.SecurityGroup(
+            self, "RunnerSg", vpc=vpc, allow_all_outbound=False,
+            description="Agent runner tasks: no inbound; outbound HTTPS to VPC endpoints only")
+        runner_sg.add_egress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(443),
+                                  "HTTPS to the VPC endpoints (no other route exists)")
 
         # ---------------------------------------------------------------- case file
         bucket = s3.Bucket(
             self, "CaseDocuments", versioned=True, enforce_ssl=True,
             encryption=s3.BucketEncryption.S3_MANAGED,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            server_access_logs_bucket=log_bucket, server_access_logs_prefix="case-documents/",
             removal_policy=RemovalPolicy.RETAIN,
         )
         table = dynamodb.Table(
@@ -85,6 +131,7 @@ class PipelineStack(Stack):
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
                 point_in_time_recovery_enabled=True),
+            deletion_protection=True,
             removal_policy=RemovalPolicy.RETAIN,
         )
 
@@ -119,7 +166,7 @@ class PipelineStack(Stack):
             CONTAINER_NAME,
             image=ecs.ContainerImage.from_docker_image_asset(image),
             environment=runner_env,
-            logging=ecs.LogDrivers.aws_logs(stream_prefix="runner", log_retention=logs.RetentionDays.SIX_MONTHS),
+            logging=ecs.LogDrivers.aws_logs(stream_prefix="runner", log_retention=LOG_RETENTION),
         )
         bucket.grant_read_write(task_def.task_role)
         table.grant_read_write_data(task_def.task_role)
@@ -149,20 +196,28 @@ class PipelineStack(Stack):
         portal_param_arn = self.format_arn(service="ssm", resource="parameter",
                                            resource_name=PORTAL_URL_PARAMETER.lstrip("/"))
 
-        def fn(name: str, module: str, extra_env: dict | None = None, timeout: int = 30) -> lambda_.Function:
+        def fn(name: str, module: str, extra_env: dict | None = None, timeout: int = 30,
+               writes: bool = True) -> lambda_.Function:
             f = lambda_.Function(
-                self, name, runtime=lambda_.Runtime.PYTHON_3_12, code=code,
-                handler=f"agentpipe.aws.lambdas.{module}.handler",
+                self, name, runtime=lambda_.Runtime.PYTHON_3_12, architecture=lambda_.Architecture.ARM_64,
+                code=code, handler=f"agentpipe.aws.lambdas.{module}.handler",
                 environment={**common_env, **(extra_env or {})},
-                timeout=Duration.seconds(timeout), memory_size=256,
-                log_group=logs.LogGroup(self, f"{name}Logs", retention=logs.RetentionDays.SIX_MONTHS),
+                timeout=Duration.seconds(timeout), memory_size=256, tracing=lambda_.Tracing.ACTIVE,
+                log_group=logs.LogGroup(self, f"{name}Logs", retention=LOG_RETENTION),
             )
-            bucket.grant_read_write(f)
-            table.grant_read_write_data(f)
-            teams_secret.grant_read(f)
-            # Read by name, not by reference: referencing the parameter would create a dependency cycle
-            # (parameter -> CloudFront -> API -> Lambdas).
-            f.add_to_role_policy(iam.PolicyStatement(actions=["ssm:GetParameter"], resources=[portal_param_arn]))
+            if writes:
+                bucket.grant_read_write(f)
+                table.grant_read_write_data(f)
+                teams_secret.grant_read(f)
+                # Read by name, not by reference: referencing the parameter would create a dependency
+                # cycle (parameter -> CloudFront -> API -> Lambdas).
+                f.add_to_role_policy(iam.PolicyStatement(actions=["ssm:GetParameter"],
+                                                         resources=[portal_param_arn]))
+            else:  # read-only views
+                bucket.grant_read(f)
+                table.grant_read_data(f)
+            alarm(f"{name}Errors", f.metric_errors(period=Duration.minutes(5)),
+                  f"The {name} function returned errors")
             return f
 
         wait_fn = fn("WaitForPeople", "wait_for_people")
@@ -171,8 +226,8 @@ class PipelineStack(Stack):
         finish_fn = fn("FinishCase", "finish_case")
         respond_fn = fn("Respond", "respond")
         respond_fn.add_to_role_policy(iam.PolicyStatement(actions=["states:SendTaskSuccess"], resources=["*"]))
-        get_fn = fn("GetCase", "get_case")
-        list_fn = fn("ListCases", "list_cases")
+        get_fn = fn("GetCase", "get_case", writes=False)
+        list_fn = fn("ListCases", "list_cases", writes=False)
 
         # ---------------------------------------------------------------- state machine
         refs = Refs(
@@ -192,7 +247,7 @@ class PipelineStack(Stack):
             state_machine_type=sfn.StateMachineType.STANDARD,
             tracing_enabled=True,
             logs=sfn.LogOptions(
-                destination=logs.LogGroup(self, "PipelineLogs", retention=logs.RetentionDays.SIX_MONTHS),
+                destination=logs.LogGroup(self, "PipelineLogs", retention=LOG_RETENTION),
                 level=sfn.LogLevel.ERROR,
             ),
         )
@@ -204,6 +259,10 @@ class PipelineStack(Stack):
             resources=[task_def.task_role.role_arn, task_def.obtain_execution_role().role_arn]))
         for f in (wait_fn, publish_fn, finish_fn):
             f.grant_invoke(state_machine)
+        alarm("CasesFailed", state_machine.metric_failed(period=Duration.minutes(5)),
+              "A case stopped with an error (see the Step Functions execution named after the case)")
+        alarm("CasesTimedOut", state_machine.metric_timed_out(period=Duration.minutes(5)),
+              "A case timed out")
 
         start_fn = fn("StartCase", "start_case", {
             "STATE_MACHINE_ARN": state_machine.state_machine_arn,
@@ -221,6 +280,8 @@ class PipelineStack(Stack):
                 fullname=cognito.StandardAttribute(required=False, mutable=True)),
             account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
             password_policy=cognito.PasswordPolicy(min_length=12),
+            mfa=cognito.Mfa.OPTIONAL,
+            mfa_second_factor=cognito.MfaSecondFactor(sms=False, otp=True),
             removal_policy=RemovalPolicy.RETAIN,
         )
         providers = [cognito.UserPoolClientIdentityProvider.COGNITO]
@@ -245,13 +306,14 @@ class PipelineStack(Stack):
 
         # ---------------------------------------------------------------- API (Cognito sign-in required)
         authorizer = apigw.CognitoUserPoolsAuthorizer(self, "Authorizer", cognito_user_pools=[user_pool])
-        api_access_logs = logs.LogGroup(self, "ApiAccessLogs", retention=logs.RetentionDays.SIX_MONTHS)
+        api_access_logs = logs.LogGroup(self, "ApiAccessLogs", retention=LOG_RETENTION)
         rest_api = apigw.RestApi(
             self, "Api", rest_api_name="agent-pipeline", cloud_watch_role=True,
             default_method_options=apigw.MethodOptions(
                 authorization_type=apigw.AuthorizationType.COGNITO, authorizer=authorizer),
             deploy_options=apigw.StageOptions(
                 stage_name="prod", throttling_rate_limit=20, throttling_burst_limit=40,
+                tracing_enabled=True,
                 access_log_destination=apigw.LogGroupLogDestination(api_access_logs),
                 access_log_format=apigw.AccessLogFormat.json_with_standard_fields(
                     caller=False, http_method=True, ip=True, protocol=True, request_time=True,
@@ -263,6 +325,8 @@ class PipelineStack(Stack):
         one = cases.add_resource("{case_id}")
         one.add_method("GET", apigw.LambdaIntegration(get_fn))
         one.add_resource("respond").add_method("POST", apigw.LambdaIntegration(respond_fn))
+        alarm("ApiServerErrors", rest_api.metric_server_error(period=Duration.minutes(5)),
+              "The API returned 5xx errors")
 
         # ---------------------------------------------------------------- portal (S3 + CloudFront)
         portal_bucket = s3.Bucket(
@@ -288,6 +352,7 @@ class PipelineStack(Stack):
                 ),
             },
             minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+            enable_logging=True, log_bucket=log_bucket, log_file_prefix="cloudfront/",
         )
         portal_url = f"https://{distribution.distribution_domain_name}"
 
@@ -320,8 +385,27 @@ class PipelineStack(Stack):
             distribution=distribution,
             distribution_paths=["/*"],
         )
-        ssm.StringParameter(self, "PortalUrlParameter", parameter_name=PORTAL_URL_PARAMETER, string_value=portal_url,
-                            description="Portal address used in notification links")
+        ssm.StringParameter(self, "PortalUrlParameter", parameter_name=PORTAL_URL_PARAMETER,
+                            string_value=portal_url, description="Portal address used in notification links")
+
+        # ---------------------------------------------------------------- AWS Budgets (optional)
+        if monthly_budget_usd:
+            budgets.CfnBudget(
+                self, "MonthlyBudget",
+                budget=budgets.CfnBudget.BudgetDataProperty(
+                    budget_name=f"agent-pipeline-{self.stack_name}-monthly",
+                    budget_type="COST", time_unit="MONTHLY",
+                    budget_limit=budgets.CfnBudget.SpendProperty(amount=monthly_budget_usd, unit="USD")),
+                notifications_with_subscribers=[
+                    budgets.CfnBudget.NotificationWithSubscribersProperty(
+                        notification=budgets.CfnBudget.NotificationProperty(
+                            notification_type=kind, comparison_operator="GREATER_THAN",
+                            threshold=threshold, threshold_type="PERCENTAGE"),
+                        subscribers=[budgets.CfnBudget.SubscriberProperty(
+                            subscription_type="SNS", address=alerts.topic_arn)])
+                    for kind, threshold in (("ACTUAL", 80), ("FORECASTED", 100))
+                ],
+            )
 
         CfnOutput(self, "PortalUrl", value=portal_url)
         CfnOutput(self, "UserPoolId", value=user_pool.user_pool_id)
@@ -329,5 +413,6 @@ class PipelineStack(Stack):
         CfnOutput(self, "StateMachineArn", value=state_machine.state_machine_arn)
         CfnOutput(self, "CaseBucket", value=bucket.bucket_name)
         CfnOutput(self, "CaseTable", value=table.table_name)
+        CfnOutput(self, "AlertsTopic", value=alerts.topic_arn)
         CfnOutput(self, "TeamsWebhookSecret", value=teams_secret.secret_name)
         CfnOutput(self, "JiraSecret", value=jira_secret.secret_name)

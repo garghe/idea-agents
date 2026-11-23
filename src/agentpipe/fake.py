@@ -27,7 +27,7 @@ class ScriptedAgentClient:
         self.calls: list[str] = []
 
     def run(self, role: Role, system_prompt: str, task: str, workspace: Path, schema: dict,
-            resume: str | None = None) -> AgentResult:
+            resume: str | None = None, budget_usd: float | None = None) -> AgentResult:
         self.calls.append(role.name)
         ws = Path(workspace)
         handler = getattr(self, "_" + role.name.replace("-", "_"), None)

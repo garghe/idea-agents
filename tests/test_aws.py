@@ -58,6 +58,17 @@ def test_reviewers_run_in_parallel_and_route_is_code(catalogue):
     assert {"Name": "IS_CHAIR", "Value": "1"} in chair_env
 
 
+def test_retries_cover_temporary_errors_only(catalogue):
+    states = build_definition(catalogue.pipeline)["States"]
+    retried = {e for r in states["intake.Run"]["Retry"] for e in r["ErrorEquals"]}
+    assert "RunnerError" in retried and "ECS.AmazonECSException" in retried
+    assert not retried & {"BudgetExceeded", "AgentLimitReached", "AgentOutputError", "States.ALL", "States.Timeout"}
+    branch = states["design.Reviewers"]["Branches"][0]
+    assert branch["States"][branch["StartAt"]]["Retry"]
+    for name in ("intake.WaitAnswers", "PublishBacklog", "Failed"):
+        assert states[name]["Retry"][0]["ErrorEquals"][0].startswith("Lambda.")
+
+
 def test_agent_tasks_wait_for_a_token(catalogue):
     states = build_definition(catalogue.pipeline)["States"]
     for name in ("intake.Run", "design.Designer", "design.Chair", "stories.Run"):

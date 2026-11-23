@@ -31,6 +31,9 @@ PipelineStack(
     auth_domain_prefix=ctx("authDomainPrefix") or None,
     saml_metadata_url=ctx("samlMetadataUrl") or None,
     saml_provider_name=ctx("samlProviderName") or "CorporateSSO",
+    alarm_email=ctx("alarmEmail") or None,
+    monthly_budget_usd=float(ctx("monthlyBudgetUsd")) if ctx("monthlyBudgetUsd") else None,
+    cost_centre=ctx("costCentre") or None,
     env=cdk.Environment(account=ctx("account"), region=ctx("region") or "eu-west-2"),
 )
 app.synth()

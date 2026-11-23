@@ -132,7 +132,7 @@ class BadThenGoodClient:
     def __init__(self):
         self.prompts = []
 
-    def run(self, role, system_prompt, task, workspace, schema, resume=None):
+    def run(self, role, system_prompt, task, workspace, schema, resume=None, budget_usd=None):
         self.prompts.append((task, resume))
         if len(self.prompts) == 1:
             return AgentResult({"status": "complete"}, "", 0.5, 3, "sess-1", "sonnet")
@@ -185,3 +185,39 @@ def test_document_names_are_checked(store):
     for bad in ("../x.md", "/etc/passwd", "a/b/c.md", ""):
         with pytest.raises(ValueError):
             store.write_doc(case["id"], bad, "x")
+
+
+def test_a_run_that_hits_its_cap_is_not_retried(catalogue, store, tmp_path):
+    from agentpipe.runner import AgentLimitError
+
+    class OverBudget:
+        calls = 0
+
+        def run(self, role, system_prompt, task, workspace, schema, resume=None, budget_usd=None):
+            OverBudget.calls += 1
+            return AgentResult(None, "", budget_usd, 9, "s", "opus", error="max budget", limit_hit="budget")
+
+    runner = StageRunner(catalogue, store, OverBudget(), work_root=tmp_path)
+    case = store.create_case("t", "request")
+    with pytest.raises(AgentLimitError):
+        runner.run_role(case["id"], "intake", "intake")
+    assert OverBudget.calls == 1
+    assert store.list_runs(case["id"])[0]["limit_hit"] == "budget"
+
+
+def test_each_run_is_capped_at_what_is_left_of_the_case_budget(catalogue, store, tmp_path):
+    seen = []
+
+    class Recorder:
+        def run(self, role, system_prompt, task, workspace, schema, resume=None, budget_usd=None):
+            seen.append(budget_usd)
+            (workspace / "output" / "02-business-case.md").write_text("# Case\n")
+            return AgentResult({"status": "complete", "summary": "ok", "document": "02-business-case.md"},
+                               "", 0.5, 1, "s", "opus")
+
+    runner = StageRunner(catalogue, store, Recorder(), work_root=tmp_path)
+    case = store.create_case("t", "request")
+    limit = catalogue.pipeline.limits.case_budget_usd
+    store.add_run(case["id"], {"cost_usd": limit - 1.5})  # $1.50 left; the value role allows $4
+    runner.run_role(case["id"], "value", "value")
+    assert seen == [1.5]

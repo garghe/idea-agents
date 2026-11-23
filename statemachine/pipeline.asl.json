@@ -67,6 +67,24 @@
       },
       "TimeoutSeconds": 3600,
       "ResultPath": "$.last",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "ECS.AmazonECSException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "RunnerError"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [
@@ -104,6 +122,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.response",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "intake.NextRound",
       "Catch": [
         {
@@ -196,6 +227,24 @@
       },
       "TimeoutSeconds": 3600,
       "ResultPath": "$.last",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "ECS.AmazonECSException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "RunnerError"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [
@@ -233,6 +282,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.response",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "value.NextRound",
       "Catch": [
         {
@@ -286,6 +348,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.decision",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "analysis.GateOutcome",
       "Catch": [
         {
@@ -376,6 +451,24 @@
       },
       "TimeoutSeconds": 3600,
       "ResultPath": "$.last",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "ECS.AmazonECSException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "RunnerError"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [
@@ -413,6 +506,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.response",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "analysis.NextRound",
       "Catch": [
         {
@@ -505,6 +611,24 @@
       },
       "TimeoutSeconds": 3600,
       "ResultPath": "$.last",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "ECS.AmazonECSException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "RunnerError"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [
@@ -542,6 +666,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.response",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "design.Designer",
       "Catch": [
         {
@@ -623,6 +760,24 @@
               },
               "TimeoutSeconds": 3600,
               "ResultPath": null,
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "ECS.AmazonECSException"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": [
+                    "RunnerError"
+                  ],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 1,
+                  "BackoffRate": 2.0
+                }
+              ],
               "End": true
             }
           }
@@ -686,6 +841,24 @@
               },
               "TimeoutSeconds": 3600,
               "ResultPath": null,
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "ECS.AmazonECSException"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": [
+                    "RunnerError"
+                  ],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 1,
+                  "BackoffRate": 2.0
+                }
+              ],
               "End": true
             }
           }
@@ -749,6 +922,24 @@
               },
               "TimeoutSeconds": 3600,
               "ResultPath": null,
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "ECS.AmazonECSException"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": [
+                    "RunnerError"
+                  ],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 1,
+                  "BackoffRate": 2.0
+                }
+              ],
               "End": true
             }
           }
@@ -826,6 +1017,24 @@
       },
       "TimeoutSeconds": 3600,
       "ResultPath": "$.last",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "ECS.AmazonECSException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "RunnerError"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [
@@ -854,6 +1063,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.decision",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "design.GateOutcome",
       "Catch": [
         {
@@ -930,6 +1152,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.response",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "design.NextRound",
       "Catch": [
         {
@@ -973,6 +1208,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.decision",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "design.EscalationOutcome",
       "Catch": [
         {
@@ -1042,6 +1290,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.decision",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "stories.GateOutcome",
       "Catch": [
         {
@@ -1132,6 +1393,24 @@
       },
       "TimeoutSeconds": 3600,
       "ResultPath": "$.last",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "ECS.AmazonECSException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "RunnerError"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [
@@ -1169,6 +1448,19 @@
       },
       "TimeoutSeconds": 2592000,
       "ResultPath": "$.response",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "stories.NextRound",
       "Catch": [
         {
@@ -1206,6 +1498,19 @@
         }
       },
       "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "Done",
       "Catch": [
         {
@@ -1232,6 +1537,19 @@
         }
       },
       "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "Succeeded"
     },
     "TimedOut": {
@@ -1246,6 +1564,19 @@
         }
       },
       "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "Stopped"
     },
     "Failed": {
@@ -1260,6 +1591,19 @@
         }
       },
       "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
       "Next": "Stopped"
     },
     "Succeeded": {

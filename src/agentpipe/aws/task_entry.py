@@ -20,7 +20,7 @@ import boto3
 
 from ..agent_client import ClaudeAgentClient
 from ..catalogue import Catalogue
-from ..runner import AgentOutputError, BudgetExceeded, StageRunner
+from ..runner import AgentLimitError, AgentOutputError, BudgetExceeded, StageRunner
 from ..store import RUNNING
 from .store import AwsCaseStore
 
@@ -59,6 +59,8 @@ def run_from_env(env: dict, store=None, client=None, sfn=None) -> int:
         return 0
     except BudgetExceeded as exc:
         sfn.send_task_failure(taskToken=token, error="BudgetExceeded", cause=str(exc)[:32000])
+    except AgentLimitError as exc:
+        sfn.send_task_failure(taskToken=token, error="AgentLimitReached", cause=str(exc)[:32000])
     except AgentOutputError as exc:
         sfn.send_task_failure(taskToken=token, error="AgentOutputError", cause=str(exc)[:32000])
     except Exception as exc:  # noqa: BLE001 - report every failure to the workflow

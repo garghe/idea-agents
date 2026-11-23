@@ -29,6 +29,7 @@ class AgentResult:
     session_id: str | None
     model: str
     error: str | None = None
+    limit_hit: str | None = None  # "budget" or "turns" when the run was stopped by its cap
 
 
 class AgentClient(Protocol):
@@ -40,6 +41,7 @@ class AgentClient(Protocol):
         workspace: Path,
         schema: dict,
         resume: str | None = None,
+        budget_usd: float | None = None,
     ) -> AgentResult: ...
 
 
@@ -87,10 +89,11 @@ class ClaudeAgentClient:
             use_bedrock = os.environ.get("AGENTPIPE_USE_BEDROCK") == "1"
         self.use_bedrock = use_bedrock
 
-    def run(self, role, system_prompt, task, workspace, schema, resume=None) -> AgentResult:
-        return asyncio.run(self._run(role, system_prompt, task, Path(workspace), schema, resume))
+    def run(self, role, system_prompt, task, workspace, schema, resume=None, budget_usd=None) -> AgentResult:
+        return asyncio.run(self._run(role, system_prompt, task, Path(workspace), schema, resume, budget_usd))
 
-    def _options(self, role: Role, system_prompt: str, workspace: Path, schema: dict, resume):
+    def _options(self, role: Role, system_prompt: str, workspace: Path, schema: dict, resume,
+                 budget_usd: float | None = None):
         from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, HookMatcher
 
         async def guard(input_data, tool_use_id, context):
@@ -126,7 +129,7 @@ class ClaudeAgentClient:
             setting_sources=[],  # ignore user/project settings on the host
             cwd=str(workspace),
             max_turns=role.max_turns,
-            max_budget_usd=role.budget_usd,
+            max_budget_usd=budget_usd if budget_usd is not None else role.budget_usd,
             agents=agents or None,
             hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[guard])]},
             output_format={"type": "json_schema", "schema": schema},
@@ -135,10 +138,10 @@ class ClaudeAgentClient:
             env=env,
         )
 
-    async def _run(self, role, system_prompt, task, workspace, schema, resume) -> AgentResult:
+    async def _run(self, role, system_prompt, task, workspace, schema, resume, budget_usd=None) -> AgentResult:
         from claude_agent_sdk import ResultMessage, query
 
-        options = self._options(role, system_prompt, workspace, schema, resume)
+        options = self._options(role, system_prompt, workspace, schema, resume, budget_usd)
         result: ResultMessage | None = None
         async for message in query(prompt=task, options=options):
             if isinstance(message, ResultMessage):
@@ -150,7 +153,8 @@ class ClaudeAgentClient:
         if output is None:
             output = parse_envelope_text(result.result or "")
         error = None
-        if result.is_error:
+        limit_hit = {"error_max_budget_usd": "budget", "error_max_turns": "turns"}.get(result.subtype)
+        if result.is_error or limit_hit:
             error = f"agent ended with {result.subtype}: {result.errors or result.result}"
         return AgentResult(
             output=output,
@@ -160,4 +164,5 @@ class ClaudeAgentClient:
             session_id=result.session_id,
             model=role.model,
             error=error,
+            limit_hit=limit_hit,
         )

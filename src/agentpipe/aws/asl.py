@@ -21,6 +21,18 @@ from ..config import PipelineConfig, Stage
 AGENT_TIMEOUT_SECONDS = 60 * 60  # one agent run
 PEOPLE_TIMEOUT_SECONDS = 30 * 24 * 60 * 60  # how long a case may wait for a person
 
+# Retries for temporary failures only. BudgetExceeded, AgentLimitReached and AgentOutputError are
+# never retried: running the agent again would spend the money again for the same result.
+AGENT_RETRY = [
+    {"ErrorEquals": ["ECS.AmazonECSException"], "IntervalSeconds": 30, "MaxAttempts": 3, "BackoffRate": 2.0},
+    {"ErrorEquals": ["RunnerError"], "IntervalSeconds": 60, "MaxAttempts": 1, "BackoffRate": 2.0},
+]
+LAMBDA_RETRY = [{
+    "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+    "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0,
+}]
+
 
 @dataclass(frozen=True)
 class Refs:
@@ -80,6 +92,7 @@ class _Builder:
             },
             "TimeoutSeconds": AGENT_TIMEOUT_SECONDS,
             "ResultPath": result_path,
+            "Retry": AGENT_RETRY,
         }
         if catch:  # inside a Parallel branch, errors go to the Parallel state's own Catch
             state["Catch"] = self.catch()
@@ -104,6 +117,7 @@ class _Builder:
             "Parameters": {"FunctionName": self.refs.wait_function_arn, "Payload": payload},
             "TimeoutSeconds": PEOPLE_TIMEOUT_SECONDS,
             "ResultPath": result_path,
+            "Retry": LAMBDA_RETRY,
             "Next": nxt,
             "Catch": [
                 {"ErrorEquals": ["States.Timeout"], "ResultPath": "$.error", "Next": "TimedOut"},
@@ -241,6 +255,7 @@ class _Builder:
             "Parameters": {"FunctionName": self.refs.publish_function_arn,
                            "Payload": {"case_id.$": "$.case_id"}},
             "ResultPath": None,
+            "Retry": LAMBDA_RETRY,
             "Next": "Done",
             "Catch": self.catch(),
         }
@@ -253,6 +268,7 @@ class _Builder:
                                "Payload": {"case_id.$": "$.case_id", "outcome": outcome,
                                            "error.$": "$"}},
                 "ResultPath": None,
+                "Retry": LAMBDA_RETRY,
                 "Next": "Succeeded" if outcome == "rejected" else "Stopped",
             }
         self.states["Succeeded"] = {"Type": "Succeed"}

@@ -46,6 +46,7 @@ def synth(tmp_path_factory):
     app = cdk.App(outdir=str(out))
     PipelineStack(app, "Test", pipeline=Catalogue(REPO / "catalogue").pipeline,
                   model_overrides={"ANTHROPIC_DEFAULT_OPUS_MODEL": "eu.anthropic.example"},
+                  alarm_email="ops@example.com", monthly_budget_usd=500, cost_centre="ARCH",
                   env=cdk.Environment(account="123456789012", region="eu-west-2"))
     app.synth()
     return out / "Test.template.json"
@@ -134,3 +135,68 @@ def test_deploy_workflow_is_gated_and_keyless():
     assert "aws-access-key-id" not in text and "secrets.AWS" not in text
     options = wf[True]["workflow_dispatch"]["inputs"]["method"]["options"]  # YAML reads "on" as True
     assert options == ["prepare-change-set", "execute-change-set", "change-set"]
+
+
+# ------------------------------------------------------------------ Well-Architected controls
+def template(path):
+    return json.loads(path.read_text())
+
+
+def test_security_controls(synth):
+    t = template(synth)
+    sg = next(r for k, r in t["Resources"].items()
+              if r["Type"] == "AWS::EC2::SecurityGroup" and k.startswith("RunnerSg"))
+    egress = sg["Properties"]["SecurityGroupEgress"]
+    assert [(e["IpProtocol"], e["FromPort"], e["ToPort"]) for e in egress] == [("tcp", 443, 443)]
+    assert resources(synth, "AWS::EC2::FlowLog")
+    pool = resources(synth, "AWS::Cognito::UserPool")[0]["Properties"]
+    assert pool["MfaConfiguration"] == "OPTIONAL" and pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"]
+    for b in resources(synth, "AWS::S3::Bucket"):
+        assert b["Properties"]["BucketEncryption"]
+    case_bucket = next(r for k, r in t["Resources"].items() if k.startswith("CaseDocuments")
+                       and r["Type"] == "AWS::S3::Bucket")
+    assert case_bucket["Properties"]["LoggingConfiguration"]["LogFilePrefix"] == "case-documents/"
+    dist = resources(synth, "AWS::CloudFront::Distribution")[0]["Properties"]["DistributionConfig"]
+    assert dist["Logging"]["Prefix"] == "cloudfront/"
+
+
+def test_read_only_functions_cannot_write(synth):
+    t = template(synth)
+    for name in ("GetCase", "ListCases"):
+        role = next(k for k in t["Resources"] if k.startswith(f"{name}ServiceRole") and
+                    t["Resources"][k]["Type"] == "AWS::IAM::Role")
+        actions = set()
+        for r in t["Resources"].values():
+            if r["Type"] == "AWS::IAM::Policy" and {"Ref": role} in r["Properties"]["Roles"]:
+                for st in r["Properties"]["PolicyDocument"]["Statement"]:
+                    acts = st["Action"] if isinstance(st["Action"], list) else [st["Action"]]
+                    actions.update(acts)
+        assert actions and not any(a.startswith(("s3:Put", "s3:Delete", "dynamodb:Put", "dynamodb:Update",
+                                                 "dynamodb:Delete", "secretsmanager:")) for a in actions), actions
+
+
+def test_reliability_controls(synth):
+    table = resources(synth, "AWS::DynamoDB::Table")[0]["Properties"]
+    assert table["DeletionProtectionEnabled"] is True
+    assert table["PointInTimeRecoverySpecification"]["PointInTimeRecoveryEnabled"] is True
+    assert len({s["Properties"]["AvailabilityZone"] for s in resources(synth, "AWS::EC2::Subnet")}) == 2
+
+
+def test_operations_controls(synth):
+    alarms = resources(synth, "AWS::CloudWatch::Alarm")
+    assert len(alarms) >= 10 and all(a["Properties"]["AlarmActions"] for a in alarms)
+    subscription = resources(synth, "AWS::SNS::Subscription")[0]["Properties"]
+    assert subscription["Protocol"] == "email" and subscription["Endpoint"] == "ops@example.com"
+    for f in resources(synth, "AWS::Lambda::Function"):
+        if f["Properties"].get("Handler", "").startswith("agentpipe."):
+            assert f["Properties"]["TracingConfig"]["Mode"] == "Active"
+            assert f["Properties"]["Architectures"] == ["arm64"]
+
+
+def test_cost_controls(synth):
+    budget = resources(synth, "AWS::Budgets::Budget")[0]["Properties"]
+    assert budget["Budget"]["BudgetLimit"] == {"Amount": 500, "Unit": "USD"}
+    kinds = sorted(n["Notification"]["NotificationType"] for n in budget["NotificationsWithSubscribers"])
+    assert kinds == ["ACTUAL", "FORECASTED"]
+    tagged = resources(synth, "AWS::DynamoDB::Table")[0]["Properties"]["Tags"]
+    assert {"Key": "Project", "Value": "agent-pipeline"} in tagged and {"Key": "CostCentre", "Value": "ARCH"} in tagged
