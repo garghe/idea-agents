@@ -127,5 +127,27 @@ def parse_pipeline(data: dict) -> PipelineConfig:
     return PipelineConfig(stages=tuple(stages), gates=gates, limits=limits)
 
 
+GATE_LABELS = {"go_no_go": "Go/no-go"}
+
+
+def gate_label(gate_id: str) -> str:
+    return GATE_LABELS.get(gate_id, gate_id.replace("_", " ").replace("signoff", "sign-off").capitalize())
+
+
+def pipeline_summary(cfg: PipelineConfig) -> dict:
+    """What the portal needs to draw the progress bar: stages in order, with their enabled gates."""
+    stages = []
+    for s in cfg.stages:
+        gate = cfg.gate_for(s)
+        stages.append({
+            "id": s.id,
+            "label": s.id.replace("_", " ").capitalize(),
+            "kind": s.kind,
+            "gate": {"id": gate.id, "label": gate_label(gate.id), "approver": gate.approver} if gate else None,
+        })
+    return {"stages": stages, "budget_usd": cfg.limits.case_budget_usd,
+            "max_review_rounds": cfg.limits.max_review_rounds}
+
+
 def load_pipeline(path: Path) -> PipelineConfig:
     return parse_pipeline(yaml.safe_load(Path(path).read_text(encoding="utf-8")))

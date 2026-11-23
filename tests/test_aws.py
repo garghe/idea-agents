@@ -143,12 +143,17 @@ def lambda_env(tmp_path, monkeypatch):
     for mod in ("start_case", "respond"):
         monkeypatch.setattr(f"agentpipe.aws.lambdas.{mod}.boto3", FakeBoto())
     monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    from agentpipe.config import pipeline_summary
+    from agentpipe.catalogue import Catalogue
+    from conftest import REPO
+    monkeypatch.setenv("PIPELINE_JSON", json.dumps(pipeline_summary(Catalogue(REPO / "catalogue").pipeline)))
     return store, sent
 
 
-def api(body=None, case_id=None):
+def api(body=None, case_id=None, query=None):
     return {"body": json.dumps(body or {}), "pathParameters": {"case_id": case_id} if case_id else None,
-            "requestContext": {"identity": {"userArn": "arn:aws:iam::1:user/marco"}}}
+            "queryStringParameters": query,
+            "requestContext": {"authorizer": {"claims": {"email": "marco@example.com", "name": "Marco G"}}}}
 
 
 def test_start_wait_answer_and_decide(lambda_env):
@@ -170,6 +175,16 @@ def test_start_wait_answer_and_decide(lambda_env):
     shown = json.loads(get_case.handler(api(case_id=cid), None)["body"])
     assert "task_token" not in (shown["case"]["pending"] or {})
     assert shown["open_questions"][0]["id"] == "Q-1"
+    assert shown["waiting_for"] == "Requester: 1 question"
+    assert shown["progress"][0] == {"kind": "stage", "id": "intake", "label": "Intake", "state": "waiting",
+                                    "note": "Needs answers"}
+    assert json.loads(get_case.handler(api(case_id=cid, query={"doc": "request.md"}), None)["body"])["content"] \
+        == "Clips please"
+    assert get_case.handler(api(case_id=cid, query={"doc": "../x"}), None)["statusCode"] == 400
+
+    from agentpipe.aws.lambdas import list_cases
+    listed = json.loads(list_cases.handler({}, None)["body"])
+    assert listed["counts"]["waiting"] == 1 and listed["cases"][0]["id"] == cid
 
     resp = respond.handler(api({"answers": "Premier League"}, cid), None)
     assert resp["statusCode"] == 200
@@ -184,7 +199,8 @@ def test_start_wait_answer_and_decide(lambda_env):
     assert respond.handler(api({"outcome": "maybe"}, cid), None)["statusCode"] == 400
     resp = respond.handler(api({"outcome": "approve", "comment": "Good"}, cid), None)
     assert resp["statusCode"] == 200 and sent.success[-1] == ("T2", {"outcome": "approve"})
-    assert store.list_decisions(cid)[0]["by"] == "arn:aws:iam::1:user/marco"
+    assert store.list_decisions(cid)[0]["by"] == "Marco G"
+    assert store.read_doc(cid, "answers/01-intake.md").startswith("# Answers from Marco G")
 
 
 def test_publish_backlog_dry_run(lambda_env):
@@ -261,3 +277,10 @@ def test_aws_store_round_trip(monkeypatch):
         assert [c["id"] for c in store.list_cases()] == [cid]
         with pytest.raises(KeyError):
             store.get_case("C-nope")
+
+        # Only the first of two simultaneous responses may take the task token.
+        case = store.get_case(cid)
+        case.update(status="waiting_gate", pending={"kind": "gate", "task_token": "TOKEN-1"})
+        store.put_case(case)
+        assert store.claim_pending(cid, "TOKEN-1") is True
+        assert store.claim_pending(cid, "TOKEN-1") is False

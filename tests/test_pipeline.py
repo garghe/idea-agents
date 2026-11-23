@@ -17,7 +17,8 @@ def test_happy_path_with_blocker_review_round_and_gates(pipeline_factory, store)
 
     # Intake asks a question; nothing else runs.
     assert case["status"] == "waiting_answers" and case["stage"] == "intake"
-    assert [b["question"] for b in store.open_blockers(cid)] == ["Which competitions allow social clips?"]
+    assert [b["question"] for b in store.open_blockers(cid)] == \
+        ["Which competitions, channels or regions are in scope at launch?"]
 
     # Answers: intake reruns, value runs with no gate (go/no-go is off), analysis stops at its gate.
     case = pipe.answer(cid, "Premier League only", by="requester")
@@ -37,6 +38,9 @@ def test_happy_path_with_blocker_review_round_and_gates(pipeline_factory, store)
 
     backlog = json.loads(store.read_doc(cid, "05-backlog.json"))
     assert backlog["epics"][0]["stories"][0]["id"] == "E1-S1"
+    for doc in ("01-request-brief.md", "02-business-case.md", "03-requirements.md", "04-design.md"):
+        assert "MOCK DATA" in store.read_doc(cid, doc)
+    assert "Premier League only" in store.read_doc(cid, "01-request-brief.md")
     assert client.calls.count("designer") == 2
     assert client.calls.count("chair") == 2
     assert [d["gate"] for d in store.list_decisions(cid)] == ["scope_check", "design_signoff", "backlog_release"]

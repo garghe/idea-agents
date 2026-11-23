@@ -15,6 +15,7 @@ log = logging.getLogger()
 log.setLevel(logging.INFO)
 
 _store: AwsCaseStore | None = None
+_portal_url: str | None = None
 
 
 def store() -> AwsCaseStore:
@@ -24,12 +25,21 @@ def store() -> AwsCaseStore:
     return _store
 
 
+def pipeline_summary() -> dict:
+    """The pipeline's stages and gates, passed in by the stack (generated from pipeline.yaml)."""
+    return json.loads(os.environ["PIPELINE_JSON"])
+
+
 def response(status: int, body: dict) -> dict:
-    return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": json.dumps(body)}
+    return {"statusCode": status,
+            "headers": {"Content-Type": "application/json", "Cache-Control": "no-store"},
+            "body": json.dumps(body)}
 
 
 def body_of(event: dict) -> dict:
     raw = event.get("body") or "{}"
+    if len(raw) > 200_000:
+        raise ValueError("body is too large")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -39,10 +49,10 @@ def body_of(event: dict) -> dict:
     return data
 
 
-def caller(event: dict, data: dict) -> str:
-    """Who is acting: the IAM caller recorded by API Gateway, else the name given in the body."""
-    identity = (event.get("requestContext") or {}).get("identity") or {}
-    return identity.get("userArn") or data.get("by") or "unknown"
+def caller(event: dict) -> str:
+    """Who is acting, from the verified sign-in token. Never taken from the request body."""
+    claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("claims") or {}
+    return claims.get("name") or claims.get("email") or claims.get("cognito:username") or "unknown"
 
 
 def secret_json(arn_env: str) -> dict:
@@ -57,6 +67,26 @@ def secret_json(arn_env: str) -> dict:
     except Exception:  # noqa: BLE001 - an unconfigured secret must not break the workflow
         log.warning("secret %s not usable; feature disabled", arn_env)
         return {}
+
+
+def portal_url() -> str:
+    """The portal address for links in notifications (from the stack's SSM parameter)."""
+    global _portal_url
+    if _portal_url is None:
+        _portal_url = os.environ.get("PORTAL_URL", "")
+        name = os.environ.get("PORTAL_URL_PARAMETER")
+        if not _portal_url and name:
+            try:
+                _portal_url = boto3.client("ssm").get_parameter(Name=name)["Parameter"]["Value"]
+            except Exception:  # noqa: BLE001 - a missing link must not stop the case
+                log.warning("portal URL parameter %s not readable", name)
+                _portal_url = ""
+    return _portal_url.rstrip("/")
+
+
+def case_link(case_id: str) -> str:
+    base = portal_url()
+    return f"{base}/#/cases/{case_id}" if base else ""
 
 
 def post_json(url: str, payload: dict, headers: dict | None = None, timeout: int = 10) -> dict:

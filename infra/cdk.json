@@ -2,9 +2,9 @@
   "app": "python3 app.py",
   "context": {
     "region": "eu-west-2",
-    "portalUrl": "",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
-    "@aws-cdk/aws-iam:minimizePolicies": true
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/aws-apigateway:disableCloudWatchRole": false
   }
 }

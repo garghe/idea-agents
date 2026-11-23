@@ -7,3 +7,7 @@ infra
 tests
 docs
 .venv
+portal
+scripts
+statemachine
+.github

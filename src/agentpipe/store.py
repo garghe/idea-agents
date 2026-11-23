@@ -28,7 +28,7 @@ WAITING = {WAITING_ANSWERS, WAITING_GATE, WAITING_ESCALATION}
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def new_case_id() -> str:
@@ -88,6 +88,10 @@ class CaseStore(ABC):
 
     @abstractmethod
     def list_decisions(self, case_id: str) -> list[dict]: ...
+
+    def claim_pending(self, case_id: str, token: str) -> bool:
+        """Take the waiting task token before acting on it. Stores that can race override this."""
+        return True
 
     # --- shared helpers -------------------------------------------------------
     def create_case(self, title: str, request_text: str, requester: str = "unknown",

@@ -1,0 +1,217 @@
+"""What the portal sees: list and detail views of cases, and checks on what people send back.
+
+Used by the local portal server and by the AWS Lambdas, so both return exactly the same shapes.
+Standard library only (it runs inside Lambda without extra packages). `summary` is the pipeline
+summary from `agentpipe.config.pipeline_summary`, passed in as a plain dict.
+"""
+
+from __future__ import annotations
+
+from .store import (DONE, FAILED, NEW, REJECTED, RUNNING, WAITING_ANSWERS, WAITING_ESCALATION,
+                    WAITING_GATE, CaseStore)
+
+ROLE_LABELS = {
+    "intake": "Intake agent", "value": "Value agent", "analysis-lead": "Analysis lead",
+    "designer": "Designer", "reviewer-architecture": "Architecture reviewer",
+    "reviewer-security": "Security reviewer", "reviewer-operability": "Operability reviewer",
+    "chair": "Review chair", "story-writer": "Story writer",
+}
+APPROVER_LABELS = {"sponsor": "Sponsor", "product_owner": "Product owner", "lead_architect": "Lead architect",
+                   "requester": "Requester", "security": "Security", "other": "Other"}
+OUTCOMES = {"approve", "send_back", "reject"}
+
+
+def _gate_label(summary: dict, gate_id: str | None) -> str:
+    for s in summary["stages"]:
+        if s["gate"] and s["gate"]["id"] == gate_id:
+            return s["gate"]["label"]
+    return (gate_id or "decision").replace("_", " ").capitalize()
+
+
+def public_case(case: dict) -> dict:
+    """The case without the workflow's resume token, which must never leave the backend."""
+    out = dict(case)
+    pending = dict(case.get("pending") or {})
+    pending.pop("task_token", None)
+    out["pending"] = pending or None
+    return out
+
+
+def waiting_for(case: dict, open_questions: list[dict], summary: dict) -> str:
+    status = case["status"]
+    pending = case.get("pending") or {}
+    if status == WAITING_ANSWERS:
+        who = sorted({APPROVER_LABELS.get(q["for"], q["for"]) for q in open_questions}) or ["Requester"]
+        n = len(open_questions)
+        return f"{' and '.join(who)}: {n} question{'s' if n != 1 else ''}"
+    if status == WAITING_GATE:
+        approver = APPROVER_LABELS.get(pending.get("approver", ""), "Approver")
+        return f"{approver}: {_gate_label(summary, pending.get('gate'))}"
+    if status == WAITING_ESCALATION:
+        return "Lead architect: escalated review"
+    if status in (NEW, RUNNING):
+        return "Agents working"
+    if status == DONE:
+        return "Done"
+    if status == REJECTED:
+        return "Rejected"
+    return "Stopped"
+
+
+def _last_summary(runs: list[dict], stage: str) -> str | None:
+    done = [r for r in runs if r.get("stage") == stage and r.get("status") in ("complete", "blocked")]
+    return done[-1].get("summary") if done else None
+
+
+def progress(case: dict, runs: list[dict], decisions: list[dict], summary: dict) -> list[dict]:
+    """Stages and enabled gates in order, each with a state: done, current, waiting, todo or stopped."""
+    ids = [s["id"] for s in summary["stages"]]
+    ci = ids.index(case["stage"]) if case["stage"] in ids else 0
+    status = case["status"]
+    last_decision = decisions[-1] if decisions else None
+    items: list[dict] = []
+    for i, s in enumerate(summary["stages"]):
+        stage = {"kind": "stage", "id": s["id"], "label": s["label"], "state": "todo", "note": ""}
+        gate = None
+        if s["gate"]:
+            gate = {"kind": "gate", "id": s["gate"]["id"], "label": s["gate"]["label"], "state": "todo",
+                    "note": APPROVER_LABELS.get(s["gate"]["approver"], "")}
+        if status == DONE or i < ci:
+            stage.update(state="done", note=_last_summary(runs, s["id"]) or "Done")
+            if gate:
+                gate.update(state="done", note="Approved")
+        elif i == ci:
+            if status == WAITING_ANSWERS:
+                stage.update(state="waiting", note="Needs answers")
+            elif status in (NEW, RUNNING):
+                stage.update(state="current", note="Agents working")
+            elif status == WAITING_GATE:
+                stage.update(state="done", note=_last_summary(runs, s["id"]) or "Done")
+                if gate:
+                    gate.update(state="waiting", note="Waiting for decision")
+            elif status == WAITING_ESCALATION:
+                stage.update(state="waiting", note="Escalated to a person")
+            elif status == REJECTED and gate and last_decision and last_decision.get("gate") == gate["id"]:
+                stage.update(state="done", note=_last_summary(runs, s["id"]) or "Done")
+                gate.update(state="stopped", note="Rejected")
+            elif status in (REJECTED, FAILED):
+                stage.update(state="stopped", note="Rejected" if status == REJECTED else "Stopped")
+        items.append(stage)
+        if gate:
+            items.append(gate)
+    return items
+
+
+def case_row(store: CaseStore, case: dict, summary: dict) -> dict:
+    runs = store.list_runs(case["id"])
+    decisions = store.list_decisions(case["id"])
+    questions = store.open_blockers(case["id"])
+    items = progress(case, runs, decisions, summary)
+    steps = [p for p in items if p["kind"] == "stage"]
+    current = next((p for p in items if p["state"] in ("current", "waiting", "stopped")), None)
+    return {
+        "id": case["id"], "title": case["title"], "requester": case.get("requester", ""),
+        "status": case["status"], "stage": case["stage"], "round": case.get("round", 1),
+        "created_at": case["created_at"], "finished_at": case.get("finished_at"),
+        "waiting_for": waiting_for(case, questions, summary),
+        "stage_note": f"{current['label']}: {current['note']}" if current else
+                      ("Released" if case["status"] == DONE else steps[-1]["label"]),
+        "progress": [p["state"] for p in steps],
+        "cost_usd": round(sum(r.get("cost_usd") or 0.0 for r in runs), 2),
+    }
+
+
+def list_view(store: CaseStore, summary: dict) -> dict:
+    rows = [case_row(store, c, summary) for c in store.list_cases()]
+    rows.sort(key=lambda r: r["created_at"], reverse=True)
+    waiting = {WAITING_ANSWERS, WAITING_GATE, WAITING_ESCALATION}
+    return {
+        "cases": rows,
+        "counts": {
+            "all": len(rows),
+            "waiting": sum(r["status"] in waiting for r in rows),
+            "working": sum(r["status"] in (NEW, RUNNING) for r in rows),
+            "done": sum(r["status"] == DONE for r in rows),
+            "closed": sum(r["status"] in (DONE, REJECTED, FAILED) for r in rows),
+        },
+    }
+
+
+def activity(runs: list[dict], decisions: list[dict], blockers: list[dict]) -> list[dict]:
+    """Newest first. Entries in the same second keep their real order (runs, answers, decisions)."""
+    items = []
+    for r in runs:
+        if r.get("status") == "invalid":
+            text = f"{ROLE_LABELS.get(r.get('role'), r.get('role'))}: output rejected by checks, retrying"
+        else:
+            text = f"{ROLE_LABELS.get(r.get('role'), r.get('role'))}: {r.get('summary') or r.get('status')}"
+        items.append({"at": r.get("ended_at") or r.get("started_at"), "text": text,
+                      "round": r.get("round"), "kind": "agent"})
+    for b in blockers:
+        if b.get("answered_at"):
+            items.append({"at": b["answered_at"], "text": f"{b.get('answered_by', 'Someone')} answered {b['id']}",
+                          "kind": "person"})
+    for d in decisions:
+        verb = {"approve": "approved", "send_back": "sent back", "reject": "rejected"}.get(d["outcome"], d["outcome"])
+        what = d.get("gate") or d.get("kind")
+        what = "escalated review" if what == "escalation" else str(what).replace("_", " ").replace("signoff", "sign-off")
+        items.append({"at": d["at"], "text": f"{d['by']} {verb} {what}",
+                      "comment": d.get("comment") or None, "kind": "person"})
+    for seq, item in enumerate(items):
+        item["seq"] = seq
+    items.sort(key=lambda x: (x["at"] or "", x["seq"]), reverse=True)
+    for item in items:
+        del item["seq"]
+    return items
+
+
+def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
+    case = store.get_case(case_id)
+    runs = store.list_runs(case_id)
+    decisions = store.list_decisions(case_id)
+    blockers = store.list_blockers(case_id)
+    open_questions = [b for b in blockers if b["status"] == "open"]
+    findings = store.list_findings(case_id)
+    order = {"open": 0, "closed": 1, "duplicate": 2}
+    findings.sort(key=lambda f: (order.get(f["status"], 3), {"blocker": 0, "major": 1, "minor": 2}.get(f["severity"], 3), f["id"]))
+    stage_runs = [r for r in runs if r.get("stage") == case["stage"] and r.get("status") != "invalid"]
+    chair = [r for r in stage_runs if r.get("role") == "chair"]
+    return {
+        "case": public_case(case),
+        "progress": progress(case, runs, decisions, summary),
+        "waiting_for": waiting_for(case, open_questions, summary),
+        "open_questions": open_questions,
+        "findings": findings,
+        "decisions": decisions,
+        "documents": [d for d in store.list_docs(case_id)],
+        "activity": activity(runs, decisions, blockers),
+        "stage_summary": (chair[-1] if chair else stage_runs[-1]).get("summary") if stage_runs else None,
+        "cost_usd": round(sum(r.get("cost_usd") or 0.0 for r in runs), 2),
+        "budget_usd": summary.get("budget_usd"),
+        "agent_runs": len(runs),
+    }
+
+
+def check_response(case: dict, data: dict) -> str | None:
+    """Return why a response cannot be accepted, or None. Same rules locally and on AWS."""
+    status = case["status"]
+    if status == WAITING_ANSWERS:
+        if not (data.get("answers") or "").strip():
+            return "answers are required"
+        return None
+    if status in (WAITING_GATE, WAITING_ESCALATION):
+        outcome = data.get("outcome")
+        if outcome not in OUTCOMES:
+            return f"outcome must be one of {sorted(OUTCOMES)}"
+        if outcome == "send_back" and not (data.get("comment") or "").strip():
+            return "a comment is required when sending back"
+        return None
+    return f"case is not waiting for anyone (status: {status})"
+
+
+def check_new_case(data: dict) -> str | None:
+    if not (data.get("title") or "").strip() or not (data.get("request") or "").strip():
+        return "title and request are required"
+    if len(data["request"]) > 50_000:
+        return "request is too long (50,000 characters at most)"
+    return None

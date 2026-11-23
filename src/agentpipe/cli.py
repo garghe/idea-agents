@@ -6,7 +6,11 @@
   agentpipe decide C-... approve --by "Marco"             decide a gate or an escalation
   agentpipe list                                          all cases
 
-Add --fake to run with scripted agents instead of Claude (no API calls, no cost).
+  agentpipe portal                                        open the web portal on http://127.0.0.1:8080
+
+Local runs use scripted agents and mock data by default: no LLM calls, no cost.
+Add --live to call Claude for real (Anthropic API key, or Bedrock with AGENTPIPE_USE_BEDROCK=1).
+The portal always runs on mock data locally.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from .store import LocalCaseStore
 def build_pipeline(args) -> LocalPipeline:
     catalogue = Catalogue(Path(args.catalogue) if args.catalogue else None)
     store = LocalCaseStore(Path(args.cases_dir))
-    client = ScriptedAgentClient() if args.fake else ClaudeAgentClient()
+    client = ClaudeAgentClient() if args.live else ScriptedAgentClient()
     runner = StageRunner(catalogue, store, client, keep_workspaces=args.keep_workspaces)
     return LocalPipeline(catalogue, store, runner, notify=lambda m: print(m, flush=True))
 
@@ -74,7 +78,9 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cases-dir", default="cases", help="where case folders live (default: ./cases)")
     parser.add_argument("--catalogue", help="catalogue folder (default: the repo's catalogue/)")
-    parser.add_argument("--fake", action="store_true", help="use scripted agents instead of Claude")
+    parser.add_argument("--live", action="store_true",
+                        help="call Claude for real (default: scripted agents on mock data, no LLM calls)")
+    parser.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)  # old name; mock is now the default
     parser.add_argument("--keep-workspaces", action="store_true", help="keep agent working folders for debugging")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -105,9 +111,23 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("list", help="list cases")
 
+    p_portal = sub.add_parser("portal", help="run the web portal locally (mock data, no LLM calls)")
+    p_portal.add_argument("--host", default="127.0.0.1")
+    p_portal.add_argument("--port", type=int, default=8080)
+
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(name)s: %(message)s")
+    if args.command == "portal":
+        from .portal_server import serve
+        serve(Path(args.cases_dir), host=args.host, port=args.port,
+              catalogue_dir=Path(args.catalogue) if args.catalogue else None)
+        return 0
+    if args.live and args.fake:
+        parser.error("--live and --fake cannot be used together")
+    if not args.live:
+        print("MOCK MODE: scripted agents and mock data, no LLM calls. Use --live to call Claude.\n",
+              flush=True)
     pipe = build_pipeline(args)
 
     if args.command == "new":

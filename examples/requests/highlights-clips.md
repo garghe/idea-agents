@@ -1,4 +1,4 @@
-# Request: automatic highlight clips for social media
+# Request: Automatic highlight clips for social media
 
 From: Head of Digital Sport
 Date: 2026-11-20

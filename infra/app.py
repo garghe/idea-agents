@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CDK app. Deploy with:  cd infra && cdk deploy  (see README for context values)."""
+"""CDK app. Deploy with:  cd infra && cdk deploy  (the README has the full steps and context values)."""
 
 import sys
 from pathlib import Path
@@ -14,23 +14,23 @@ from agentpipe.config import load_pipeline  # noqa: E402
 from pipeline_stack import PipelineStack  # noqa: E402
 
 app = cdk.App()
+ctx = app.node.try_get_context
 overrides = {
-    env: app.node.try_get_context(key)
+    env: ctx(key)
     for key, env in (
         ("opusModel", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
         ("sonnetModel", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
         ("haikuModel", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
     )
-    if app.node.try_get_context(key)
+    if ctx(key)
 }
 PipelineStack(
     app, "AgentPipeline",
     pipeline=load_pipeline(REPO_ROOT / "catalogue" / "pipeline.yaml"),
-    portal_url=app.node.try_get_context("portalUrl") or "",
     model_overrides=overrides,
-    env=cdk.Environment(
-        account=app.node.try_get_context("account"),
-        region=app.node.try_get_context("region") or "eu-west-2",
-    ),
+    auth_domain_prefix=ctx("authDomainPrefix") or None,
+    saml_metadata_url=ctx("samlMetadataUrl") or None,
+    saml_provider_name=ctx("samlProviderName") or "CorporateSSO",
+    env=cdk.Environment(account=ctx("account"), region=ctx("region") or "eu-west-2"),
 )
 app.synth()

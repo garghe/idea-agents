@@ -8,17 +8,15 @@ Nothing runs while the case waits.
 
 from __future__ import annotations
 
-import os
-
 from ...store import WAITING_ANSWERS, WAITING_ESCALATION, WAITING_GATE, now_iso
-from .common import notify, store
+from .common import case_link, notify, store
 
 STATUS = {"answers": WAITING_ANSWERS, "gate": WAITING_GATE, "escalation": WAITING_ESCALATION}
 
 
 def message(case: dict, pending: dict, questions: list[dict], findings: list[dict]) -> str:
-    link = os.environ.get("PORTAL_URL", "").rstrip("/")
-    where = f"\n\nRespond here: {link}/cases/{case['id']}" if link else ""
+    link = case_link(case["id"])
+    where = f"\n\nRespond here: {link}" if link else ""
     head = f"Case {case['id']} ({case['title']})"
     if pending["kind"] == "answers":
         lines = [f"- {q['id']} for {q['for']}: {q['question']}" for q in questions]

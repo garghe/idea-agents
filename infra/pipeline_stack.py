@@ -1,19 +1,26 @@
-"""CDK stack for the AWS MVP.
+"""CDK stack for the AWS deployment.
 
-  API Gateway (IAM auth) ──> Lambdas ──> Step Functions ──> ECS Fargate runner ──> Bedrock (Claude)
-                                             │                    │
-                                             └──── S3 (documents) + DynamoDB (records)
+  Browser ── CloudFront ──┬── /*      S3 (portal files, private, read through Origin Access Control)
+     │                    └── /api/*  API Gateway (Cognito sign-in required) ── Lambdas
+     └── Cognito hosted sign-in (optionally federated with the corporate identity provider)
 
-The runner has no internet access: it sits in isolated subnets and reaches AWS services through
-VPC endpoints. The state machine definition is generated from catalogue/pipeline.yaml.
+  Lambdas ── Step Functions ── ECS Fargate runner (isolated subnets, no internet) ── Bedrock (Claude)
+                                       │
+                                       └── S3 (case documents, versioned) + DynamoDB (case records)
+
+The state machine definition is generated from catalogue/pipeline.yaml.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_apigateway as apigw
+from aws_cdk import aws_cloudfront as cloudfront
+from aws_cdk import aws_cloudfront_origins as origins
+from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
@@ -22,23 +29,30 @@ from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_secretsmanager as secretsmanager
+from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_stepfunctions as sfn
 from constructs import Construct
 
 from agentpipe.aws.asl import Refs, build_definition
-from agentpipe.config import PipelineConfig
+from agentpipe.config import PipelineConfig, pipeline_summary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTAINER_NAME = "runner"
+PORTAL_URL_PARAMETER = "/agent-pipeline/portal-url"
 
 
 class PipelineStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, *, pipeline: PipelineConfig,
-                 portal_url: str = "", model_overrides: dict[str, str] | None = None, **kwargs) -> None:
+                 model_overrides: dict[str, str] | None = None, auth_domain_prefix: str | None = None,
+                 saml_metadata_url: str | None = None, saml_provider_name: str = "CorporateSSO",
+                 **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+        summary = pipeline_summary(pipeline)
 
         # ---------------------------------------------------------------- network
+        # Isolated subnets: no internet gateway, no NAT. AWS services are reached through endpoints.
         vpc = ec2.Vpc(
             self, "Vpc", max_azs=2, nat_gateways=0,
             subnet_configuration=[ec2.SubnetConfiguration(
@@ -47,15 +61,15 @@ class PipelineStack(Stack):
         vpc.add_gateway_endpoint("S3", service=ec2.GatewayVpcEndpointAwsService.S3)
         vpc.add_gateway_endpoint("DynamoDb", service=ec2.GatewayVpcEndpointAwsService.DYNAMODB)
         for name, service in {
-            "Ecr": ec2.InterfaceVpcEndpointAwsService.ECR,
-            "EcrDocker": ec2.InterfaceVpcEndpointAwsService.ECR_DOCKER,
-            "Logs": ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
-            "BedrockRuntime": ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME,
-            "StepFunctions": ec2.InterfaceVpcEndpointAwsService.STEP_FUNCTIONS,
+            "Ecr": ec2.InterfaceVpcEndpointAwsService.ECR,  # image pull: registry API
+            "EcrDocker": ec2.InterfaceVpcEndpointAwsService.ECR_DOCKER,  # image pull: layers (via S3)
+            "Logs": ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,  # container logs
+            "BedrockRuntime": ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME,  # Claude
+            "StepFunctions": ec2.InterfaceVpcEndpointAwsService.STEP_FUNCTIONS,  # report back
         }.items():
             vpc.add_interface_endpoint(name, service=service, private_dns_enabled=True)
         runner_sg = ec2.SecurityGroup(self, "RunnerSg", vpc=vpc,
-                                      description="Agent runner tasks: outbound to VPC endpoints only")
+                                      description="Agent runner tasks: no inbound; outbound to VPC endpoints")
 
         # ---------------------------------------------------------------- case file
         bucket = s3.Bucket(
@@ -83,9 +97,13 @@ class PipelineStack(Stack):
             description='Jira as JSON: {"base_url", "email", "api_token", "project_key"}. '
                         'Leave as is for dry-run publishing.')
 
-        # ---------------------------------------------------------------- agent runner
+        # ---------------------------------------------------------------- agent runner (ECS Fargate)
         cluster = ecs.Cluster(self, "Cluster", vpc=vpc, container_insights_v2=ecs.ContainerInsights.ENABLED)
-        task_def = ecs.FargateTaskDefinition(self, "RunnerTask", cpu=1024, memory_limit_mib=4096)
+        task_def = ecs.FargateTaskDefinition(
+            self, "RunnerTask", cpu=1024, memory_limit_mib=4096,
+            runtime_platform=ecs.RuntimePlatform(cpu_architecture=ecs.CpuArchitecture.X86_64,
+                                                 operating_system_family=ecs.OperatingSystemFamily.LINUX),
+        )
         image = ecr_assets.DockerImageAsset(self, "RunnerImage", directory=str(REPO_ROOT),
                                             platform=ecr_assets.Platform.LINUX_AMD64)
         runner_env = {
@@ -125,8 +143,11 @@ class PipelineStack(Stack):
             "CASES_BUCKET": bucket.bucket_name,
             "CASES_TABLE": table.table_name,
             "TEAMS_WEBHOOK_SECRET_ARN": teams_secret.secret_arn,
-            "PORTAL_URL": portal_url,
+            "PORTAL_URL_PARAMETER": PORTAL_URL_PARAMETER,
+            "PIPELINE_JSON": json.dumps(summary),
         }
+        portal_param_arn = self.format_arn(service="ssm", resource="parameter",
+                                           resource_name=PORTAL_URL_PARAMETER.lstrip("/"))
 
         def fn(name: str, module: str, extra_env: dict | None = None, timeout: int = 30) -> lambda_.Function:
             f = lambda_.Function(
@@ -139,6 +160,9 @@ class PipelineStack(Stack):
             bucket.grant_read_write(f)
             table.grant_read_write_data(f)
             teams_secret.grant_read(f)
+            # Read by name, not by reference: referencing the parameter would create a dependency cycle
+            # (parameter -> CloudFront -> API -> Lambdas).
+            f.add_to_role_policy(iam.PolicyStatement(actions=["ssm:GetParameter"], resources=[portal_param_arn]))
             return f
 
         wait_fn = fn("WaitForPeople", "wait_for_people")
@@ -146,9 +170,9 @@ class PipelineStack(Stack):
         jira_secret.grant_read(publish_fn)
         finish_fn = fn("FinishCase", "finish_case")
         respond_fn = fn("Respond", "respond")
-        respond_fn.add_to_role_policy(iam.PolicyStatement(
-            actions=["states:SendTaskSuccess"], resources=["*"]))
+        respond_fn.add_to_role_policy(iam.PolicyStatement(actions=["states:SendTaskSuccess"], resources=["*"]))
         get_fn = fn("GetCase", "get_case")
+        list_fn = fn("ListCases", "list_cases")
 
         # ---------------------------------------------------------------- state machine
         refs = Refs(
@@ -161,10 +185,10 @@ class PipelineStack(Stack):
             publish_function_arn=publish_fn.function_arn,
             finish_function_arn=finish_fn.function_arn,
         )
-        definition = build_definition(pipeline, refs)
         state_machine = sfn.StateMachine(
             self, "Pipeline",
-            definition_body=sfn.DefinitionBody.from_string(Stack.of(self).to_json_string(definition)),
+            definition_body=sfn.DefinitionBody.from_string(
+                Stack.of(self).to_json_string(build_definition(pipeline, refs))),
             state_machine_type=sfn.StateMachineType.STANDARD,
             tracing_enabled=True,
             logs=sfn.LogOptions(
@@ -173,7 +197,8 @@ class PipelineStack(Stack):
             ),
         )
         state_machine.add_to_role_policy(iam.PolicyStatement(
-            actions=["ecs:RunTask"], resources=[task_def.task_definition_arn]))
+            actions=["ecs:RunTask"], resources=[task_def.task_definition_arn],
+            conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}}))
         state_machine.add_to_role_policy(iam.PolicyStatement(
             actions=["iam:PassRole"],
             resources=[task_def.task_role.role_arn, task_def.obtain_execution_role().role_arn]))
@@ -187,19 +212,120 @@ class PipelineStack(Stack):
         })
         state_machine.grant_start_execution(start_fn)
 
-        # ---------------------------------------------------------------- API (IAM auth)
-        api = apigw.RestApi(
-            self, "Api", rest_api_name="agent-pipeline",
-            default_method_options=apigw.MethodOptions(authorization_type=apigw.AuthorizationType.IAM),
-            deploy_options=apigw.StageOptions(throttling_rate_limit=10, throttling_burst_limit=20),
+        # ---------------------------------------------------------------- sign-in (Cognito)
+        user_pool = cognito.UserPool(
+            self, "Users", self_sign_up_enabled=False,
+            sign_in_aliases=cognito.SignInAliases(email=True),
+            standard_attributes=cognito.StandardAttributes(
+                email=cognito.StandardAttribute(required=True, mutable=True),
+                fullname=cognito.StandardAttribute(required=False, mutable=True)),
+            account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
+            password_policy=cognito.PasswordPolicy(min_length=12),
+            removal_policy=RemovalPolicy.RETAIN,
         )
-        cases = api.root.add_resource("cases")
+        providers = [cognito.UserPoolClientIdentityProvider.COGNITO]
+        saml = None
+        if saml_metadata_url:
+            saml = cognito.UserPoolIdentityProviderSaml(
+                self, "CorporateSso", user_pool=user_pool, name=saml_provider_name,
+                metadata=cognito.UserPoolIdentityProviderSamlMetadata.url(saml_metadata_url),
+                attribute_mapping=cognito.AttributeMapping(
+                    email=cognito.ProviderAttribute.other(
+                        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"),
+                    fullname=cognito.ProviderAttribute.other(
+                        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name")),
+            )
+            providers.append(cognito.UserPoolClientIdentityProvider.custom(saml_provider_name))
+        domain = user_pool.add_domain(
+            "Domain",
+            cognito_domain=cognito.CognitoDomainOptions(
+                domain_prefix=auth_domain_prefix or f"agent-pipeline-{self.account}"),
+            managed_login_version=cognito.ManagedLoginVersion.CLASSIC_HOSTED_UI,  # works without branding setup
+        )
+
+        # ---------------------------------------------------------------- API (Cognito sign-in required)
+        authorizer = apigw.CognitoUserPoolsAuthorizer(self, "Authorizer", cognito_user_pools=[user_pool])
+        api_access_logs = logs.LogGroup(self, "ApiAccessLogs", retention=logs.RetentionDays.SIX_MONTHS)
+        rest_api = apigw.RestApi(
+            self, "Api", rest_api_name="agent-pipeline", cloud_watch_role=True,
+            default_method_options=apigw.MethodOptions(
+                authorization_type=apigw.AuthorizationType.COGNITO, authorizer=authorizer),
+            deploy_options=apigw.StageOptions(
+                stage_name="prod", throttling_rate_limit=20, throttling_burst_limit=40,
+                access_log_destination=apigw.LogGroupLogDestination(api_access_logs),
+                access_log_format=apigw.AccessLogFormat.json_with_standard_fields(
+                    caller=False, http_method=True, ip=True, protocol=True, request_time=True,
+                    resource_path=True, response_length=True, status=True, user=True)),
+        )
+        cases = rest_api.root.add_resource("api").add_resource("cases")
+        cases.add_method("GET", apigw.LambdaIntegration(list_fn))
         cases.add_method("POST", apigw.LambdaIntegration(start_fn))
         one = cases.add_resource("{case_id}")
         one.add_method("GET", apigw.LambdaIntegration(get_fn))
         one.add_resource("respond").add_method("POST", apigw.LambdaIntegration(respond_fn))
 
-        CfnOutput(self, "ApiUrl", value=api.url)
+        # ---------------------------------------------------------------- portal (S3 + CloudFront)
+        portal_bucket = s3.Bucket(
+            self, "PortalFiles", enforce_ssl=True, encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            removal_policy=RemovalPolicy.DESTROY, auto_delete_objects=True,
+        )
+        distribution = cloudfront.Distribution(
+            self, "Portal",
+            default_root_object="index.html",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.S3BucketOrigin.with_origin_access_control(portal_bucket),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                response_headers_policy=cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+            ),
+            additional_behaviors={
+                "/api/*": cloudfront.BehaviorOptions(
+                    origin=origins.RestApiOrigin(rest_api),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                ),
+            },
+            minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+        )
+        portal_url = f"https://{distribution.distribution_domain_name}"
+
+        client = user_pool.add_client(
+            "PortalClient", generate_secret=False,
+            o_auth=cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(authorization_code_grant=True),
+                scopes=[cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
+                callback_urls=[portal_url + "/"], logout_urls=[portal_url + "/"]),
+            supported_identity_providers=providers,
+            id_token_validity=Duration.hours(1), access_token_validity=Duration.hours(1),
+            prevent_user_existence_errors=True,
+        )
+        if saml:
+            client.node.add_dependency(saml)
+
+        s3deploy.BucketDeployment(
+            self, "PortalDeploy",
+            sources=[
+                s3deploy.Source.asset(str(REPO_ROOT / "portal"), exclude=["config.json"]),
+                s3deploy.Source.json_data("config.json", {
+                    "mode": "aws",
+                    "apiBase": "/api",
+                    "pipeline": summary,
+                    "auth": {"baseUrl": domain.base_url(), "clientId": client.user_pool_client_id,
+                             "redirectUri": portal_url + "/"},
+                }),
+            ],
+            destination_bucket=portal_bucket,
+            distribution=distribution,
+            distribution_paths=["/*"],
+        )
+        ssm.StringParameter(self, "PortalUrlParameter", parameter_name=PORTAL_URL_PARAMETER, string_value=portal_url,
+                            description="Portal address used in notification links")
+
+        CfnOutput(self, "PortalUrl", value=portal_url)
+        CfnOutput(self, "UserPoolId", value=user_pool.user_pool_id)
+        CfnOutput(self, "SignInDomain", value=domain.base_url())
         CfnOutput(self, "StateMachineArn", value=state_machine.state_machine_arn)
         CfnOutput(self, "CaseBucket", value=bucket.bucket_name)
         CfnOutput(self, "CaseTable", value=table.table_name)
