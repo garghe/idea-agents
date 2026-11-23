@@ -36,6 +36,12 @@
     if (isNaN(d)) { return ''; }
     return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   }
+  function fmtDate(iso) {  // with the year, for created and updated dates
+    if (!iso) { return ''; }
+    var d = new Date(iso);
+    if (isNaN(d)) { return ''; }
+    return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
   function age(iso) {
     var mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
     if (mins < 60) { return mins + ' min'; }
@@ -614,8 +620,11 @@
     });
     var it = docItems[name] || {};
     var stage = ((d_groups || []).find(function (g) { return g.items.indexOf(it) >= 0; }) || {}).label;
+    var dates = it.at ? '<div class="muted small">Created <time datetime="' + esc(it.at) + '">' + esc(fmtDate(it.at)) + '</time>' +
+      (it.updated_at && it.updated_at !== it.at ? ' · Updated <time datetime="' + esc(it.updated_at) + '">' + esc(fmtDate(it.updated_at)) + '</time>' : '') + '</div>'
+      : '<div class="muted small">Date not recorded (created before IDEA kept document dates)</div>';
     document.getElementById('doc-head').innerHTML = it.label ? '<div><h3>' + esc(it.label) + '</h3><div class="muted small">' +
-      esc([it.by, stage ? stage + ' stage' : '', it.updated_at ? fmtTime(it.updated_at) : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+      esc([it.by, stage ? stage + ' stage' : ''].filter(Boolean).join(' · ')) + '</div>' + dates + '</div>' +
       (it.versions ? '<span class="pill grey">' + (it.versions > 1 ? 'Latest of ' + it.versions + ' versions' : '1 version') + '</span>' : '') : '';
     body.innerHTML = '<p class="muted">Loading…</p>';
     try {
