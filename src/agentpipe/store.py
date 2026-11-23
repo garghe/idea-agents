@@ -93,6 +93,18 @@ class CaseStore(ABC):
         """Take the waiting task token before acting on it. Stores that can race override this."""
         return True
 
+    def transition_status(self, case_id: str, from_status: str, to_status: str) -> bool:
+        """Move a case from one status to another only if it is still in the first one.
+
+        Stores that can race (DynamoDB) make this atomic, so two people cannot both reopen a case.
+        """
+        case = self.get_case(case_id)
+        if case["status"] != from_status:
+            return False
+        case["status"] = to_status
+        self.put_case(case)
+        return True
+
     # --- shared helpers -------------------------------------------------------
     def create_case(self, title: str, request_text: str, requester: str = "unknown",
                     first_stage: str = "intake", round_limit: int = 3) -> dict:

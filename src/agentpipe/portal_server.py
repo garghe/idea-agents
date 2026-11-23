@@ -28,7 +28,7 @@ from .config import pipeline_summary
 from .fake import ScriptedAgentClient
 from .local_pipeline import LocalPipeline
 from .runner import StageRunner
-from .store import WAITING_ANSWERS, LocalCaseStore
+from .store import REJECTED, WAITING_ANSWERS, LocalCaseStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CASE_PATH = re.compile(r"^/api/cases/([A-Za-z0-9-]+)(/respond)?$")
@@ -97,6 +97,9 @@ class PortalApp:
             if problem:
                 return (409 if "not waiting" in problem else 400), {"error": problem}
             by = (data.get("by") or "Local user").strip()[:100]
+            if case["status"] == REJECTED:
+                case = self.pipeline.reopen(case_id, by=by, comment=data["comment"])
+                return 200, {"case_id": case_id, "outcome": "reopened", "stage": case["stage"]}
             if case["status"] == WAITING_ANSWERS:
                 self.pipeline.answer(case_id, data["answers"], by=by)
                 return 200, {"case_id": case_id, "outcome": "answered"}

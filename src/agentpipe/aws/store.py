@@ -60,6 +60,20 @@ class AwsCaseStore(CaseStore):
             extra["task_token"] = token  # top-level copy, so claim_pending can test it atomically
         self._put(case["id"], "CASE", case, **extra)
 
+    def transition_status(self, case_id: str, from_status: str, to_status: str) -> bool:
+        """Atomic status change: succeeds only if the case is still in `from_status`."""
+        try:
+            self.table.update_item(
+                Key={"pk": self._pk(case_id), "sk": "CASE"},
+                UpdateExpression="SET #s = :to",
+                ConditionExpression="#s = :from",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":to": to_status, ":from": from_status},
+            )
+            return True
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
     def claim_pending(self, case_id: str, token: str) -> bool:
         """Atomically take the waiting task token, so only the first of two simultaneous responses wins."""
         try:

@@ -270,6 +270,10 @@ class PipelineStack(Stack):
             "MAX_REVIEW_ROUNDS": str(pipeline.limits.max_review_rounds),
         })
         state_machine.grant_start_execution(start_fn)
+        # Reopening a rejected case starts a new execution that resumes at the rejected stage.
+        respond_fn.add_environment("STATE_MACHINE_ARN", state_machine.state_machine_arn)
+        respond_fn.add_environment("MAX_REVIEW_ROUNDS", str(pipeline.limits.max_review_rounds))
+        state_machine.grant_start_execution(respond_fn)
 
         # ---------------------------------------------------------------- sign-in (Cognito)
         user_pool = cognito.UserPool(

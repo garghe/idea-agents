@@ -4,6 +4,7 @@
   agentpipe status C-20261123-ab12cd                      where the case is, what it waits for
   agentpipe answer C-... --text "Premier League only"     answer the open questions
   agentpipe decide C-... approve --by "Marco"             decide a gate or an escalation
+  agentpipe reopen C-... --comment "Budget now agreed"    reopen a rejected case
   agentpipe list                                          all cases
 
   agentpipe portal                                        open the web portal on http://127.0.0.1:8080
@@ -109,6 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     p_decide.add_argument("--by", default="unknown")
     p_decide.add_argument("--comment", default="")
 
+    p_reopen = sub.add_parser("reopen", help="reopen a rejected case at the stage it was rejected")
+    p_reopen.add_argument("case_id")
+    p_reopen.add_argument("--comment", required=True, help="what has changed since the rejection")
+    p_reopen.add_argument("--by", default="unknown")
+
     sub.add_parser("list", help="list cases")
 
     p_portal = sub.add_parser("portal", help="run the web portal locally (mock data, no LLM calls)")
@@ -148,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
         print_status(pipe, args.case_id)
     elif args.command == "decide":
         pipe.decide(args.case_id, args.outcome, by=args.by, comment=args.comment)
+        print()
+        print_status(pipe, args.case_id)
+    elif args.command == "reopen":
+        pipe.reopen(args.case_id, by=args.by, comment=args.comment)
         print()
         print_status(pipe, args.case_id)
     elif args.command == "list":

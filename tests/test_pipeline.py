@@ -221,3 +221,36 @@ def test_each_run_is_capped_at_what_is_left_of_the_case_budget(catalogue, store,
     store.add_run(case["id"], {"cost_usd": limit - 1.5})  # $1.50 left; the value role allows $4
     runner.run_role(case["id"], "value", "value")
     assert seen == [1.5]
+
+
+def test_reopen_a_rejected_case(pipeline_factory, store):
+    pipe, client = pipeline_factory(intake_blocks=False)
+    cid = pipe.start("Highlights", REQUEST)["id"]
+    case = pipe.decide(cid, "reject", by="PO", comment="No budget this year")
+    assert case["status"] == "rejected"
+
+    with pytest.raises(PipelineError, match="comment is required"):
+        pipe.reopen(cid, by="Sponsor", comment="  ")
+    calls_before = client.calls.count("analysis-lead")
+    case = pipe.reopen(cid, by="Sponsor", comment="Budget now agreed for Q2")
+    # Rejected at the scope check, so analysis runs again and the scope check is asked again.
+    assert client.calls.count("analysis-lead") == calls_before + 1
+    assert case["status"] == "waiting_gate" and case["pending"]["gate"] == "scope_check" and case["round"] == 2
+    assert "Budget now agreed" in store.read_doc(cid, "answers/01-analysis-reopen.md")
+    assert [d["outcome"] for d in store.list_decisions(cid)] == ["reject", "reopen"]
+
+    with pytest.raises(PipelineError, match="only a rejected case can be reopened"):
+        pipe.reopen(cid, by="Sponsor", comment="again")
+    case = pipe.decide(cid, "approve", by="PO")
+    assert case["pending"]["gate"] == "design_signoff"
+
+
+def test_reopen_a_rejected_design_gives_fresh_review_rounds(pipeline_factory, store):
+    pipe, client = pipeline_factory(intake_blocks=False, conflict=True)
+    cid = pipe.start("Highlights", REQUEST)["id"]
+    pipe.decide(cid, "approve")  # scope check -> design escalates (conflict)
+    case = pipe.decide(cid, "reject", by="Lead architect", comment="Too costly")
+    assert case["status"] == "rejected" and case["stage"] == "design"
+    case = pipe.reopen(cid, by="Sponsor", comment="Use the shared proxy")
+    assert case["round_limit"] == 2 + 3 - 1
+    assert case["pending"]["gate"] == "design_signoff"

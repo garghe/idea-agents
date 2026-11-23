@@ -115,6 +115,22 @@ def test_local_portal_runs_the_whole_flow_on_mock_data(server):
     assert listing["counts"] == {"all": 1, "waiting": 0, "working": 0, "done": 1, "closed": 1}
 
 
+def test_local_portal_reopens_a_rejected_case(server):
+    _, created = call(server, "/api/cases", {"title": "Rail", "request": REQUEST})
+    cid = created["case_id"]
+    call(server, f"/api/cases/{cid}/respond", {"answers": "Q-1: UK only"})
+    call(server, f"/api/cases/{cid}/respond", {"outcome": "reject", "comment": "Not now"})
+    _, view = call(server, f"/api/cases/{cid}")
+    assert view["can_reopen"] and view["reopen_stage"] == "analysis"
+    assert call(server, f"/api/cases/{cid}/respond", {"outcome": "reopen"})[0] == 400
+    status, res = call(server, f"/api/cases/{cid}/respond", {"outcome": "reopen", "comment": "Funded now", "by": "Sponsor"})
+    assert status == 200 and res["stage"] == "analysis"
+    _, view = call(server, f"/api/cases/{cid}")
+    assert view["case"]["status"] == "waiting_gate" and not view["can_reopen"]
+    assert view["activity"][0]["text"].startswith("Analysis lead") or any(
+        "reopened the case" in a["text"] for a in view["activity"])
+
+
 def test_local_portal_serves_files_safely(server):
     status, html = call(server, "/")
     assert status == 200 and b"Mock mode." in html and b'id="mock-banner"' in html

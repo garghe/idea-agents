@@ -1,7 +1,129 @@
 {
   "Comment": "Multi-agent delivery pipeline, generated from catalogue/pipeline.yaml",
-  "StartAt": "intake.Start",
+  "StartAt": "Start",
   "States": {
+    "intake.Resume": {
+      "Type": "Pass",
+      "Comment": "Reopened case: run intake again with the reopen comment as input",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "$.round",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "intake.Run"
+    },
+    "value.Resume": {
+      "Type": "Pass",
+      "Comment": "Reopened case: run value again with the reopen comment as input",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "$.round",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "value.Run"
+    },
+    "analysis.Resume": {
+      "Type": "Pass",
+      "Comment": "Reopened case: run analysis again with the reopen comment as input",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "$.round",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "analysis.Run"
+    },
+    "design.Resume": {
+      "Type": "Pass",
+      "Comment": "Reopened case: run design again with the reopen comment as input",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "$.round",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "design.Designer"
+    },
+    "stories.Resume": {
+      "Type": "Pass",
+      "Comment": "Reopened case: run stories again with the reopen comment as input",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "$.round",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "stories.Run"
+    },
+    "Start": {
+      "Type": "Choice",
+      "Comment": "New cases start at the first stage; reopened cases resume where they were rejected",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.resume_stage",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_stage",
+              "StringEquals": "intake"
+            }
+          ],
+          "Next": "intake.Resume"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.resume_stage",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_stage",
+              "StringEquals": "value"
+            }
+          ],
+          "Next": "value.Resume"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.resume_stage",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_stage",
+              "StringEquals": "analysis"
+            }
+          ],
+          "Next": "analysis.Resume"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.resume_stage",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_stage",
+              "StringEquals": "design"
+            }
+          ],
+          "Next": "design.Resume"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.resume_stage",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.resume_stage",
+              "StringEquals": "stories"
+            }
+          ],
+          "Next": "stories.Resume"
+        }
+      ],
+      "Default": "intake.Start"
+    },
     "intake.Start": {
       "Type": "Pass",
       "Parameters": {

@@ -51,6 +51,10 @@ the review findings and the activity log.
 
 ![Released case with backlog](docs/screenshots/case-backlog.png)
 
+**A rejected case.** Anyone can reopen it with a comment saying what has changed.
+
+![Rejected case with the reopen panel](docs/screenshots/case-rejected.png)
+
 **Starting a request.**
 
 ![New request](docs/screenshots/new-request.png)
@@ -68,7 +72,7 @@ the review findings and the activity log.
 | `.github/workflows/` | `tests.yml` runs the tests on every push; `deploy.yml` deploys to AWS after an approval. |
 | `scripts/take_screenshots.py` | Seeds mock cases and captures the portal screenshots above. |
 | `examples/requests/` | A sample business request. |
-| `tests/` | 74 tests; no Claude or AWS calls needed. |
+| `tests/` | 79 tests; no Claude or AWS calls needed. |
 
 ## Run it locally (mock data, no LLM calls)
 
@@ -100,6 +104,7 @@ agentpipe decide <case-id> approve --by "Product owner"    # scope check
 agentpipe decide <case-id> approve --by "Lead architect"   # design sign-off
 agentpipe decide <case-id> approve --by "Product owner"    # backlog release
 agentpipe status <case-id>
+agentpipe reopen <case-id> --comment "Budget now agreed" --by Sponsor   # only for a rejected case
 ```
 
 Cases live in `./cases/<case-id>/`: documents in `docs/`, earlier versions in `history/`, and every
@@ -133,6 +138,23 @@ not an agent, decides the route (`src/agentpipe/review.py`):
 | No open blocker or major findings | Design sign-off gate |
 | Reviewers conflict, or 3 rounds used | Escalate to the lead architect |
 | Otherwise | Next round |
+
+### Reopening a rejected case
+
+A rejected case can be reopened from its page in the portal (or with `agentpipe reopen`). Reopening:
+
+1. needs a comment saying what has changed since the rejection;
+2. sends the case back to **the stage where it was rejected**, in a new round, with the comment saved
+   as input for the agents (like "send back"). Rejected at the scope check, the analysis runs again;
+   rejected at design sign-off or an escalated review, the designer revises and the review panel gets
+   a fresh set of rounds; rejected at backlog release, the story writer runs again;
+3. is recorded in the activity log and the decisions, with who reopened it and why.
+
+If two people reopen the same case at the same moment, only the first counts. On AWS, reopening starts
+a new Step Functions execution (named `<case-id>-reopen-<n>`) that resumes at that stage.
+
+Spend so far still counts towards the case budget, so a case that had nearly used its budget will stop
+again soon after reopening; raise `case_budget_usd` first if that matters.
 
 ## Configuration
 
@@ -284,7 +306,7 @@ updated and removed as a unit.
 | Component | Its role here | How it is set up |
 | --- | --- | --- |
 | **AWS Lambda** (7 functions) | Small, fast steps: start a case, list and read cases (read-only), record responses, wait for people, publish to Jira, record how a case ended | Python 3.12 on Arm (Graviton), X-Ray tracing, an error alarm each; only boto3 needed |
-| **AWS Step Functions** | Runs each case: the stage order, gates, review loop, retries and timeouts. Waiting for people uses a task token, so nothing runs (or costs) while a case waits | Standard workflow generated from `pipeline.yaml`; retries temporary errors only; X-Ray tracing; error logs; alarms on failed and timed-out cases |
+| **AWS Step Functions** | Runs each case: the stage order, gates, review loop, retries and timeouts. Waiting for people uses a task token, so nothing runs (or costs) while a case waits | Standard workflow generated from `pipeline.yaml`; a reopened case starts a new execution that resumes at the rejected stage; retries temporary errors only; X-Ray tracing; error logs; alarms on failed and timed-out cases |
 | **Amazon ECS on AWS Fargate** | Runs one agent per task: loads the role, prepares the files, calls Claude through the Agent SDK, checks and saves the output | 1 vCPU, 4 GB; non-root container; isolated subnets; logs to CloudWatch |
 | **Amazon ECR** | Stores the runner image built from `Dockerfile` | Created and filled by CDK's asset publishing on deploy |
 | **Amazon Bedrock** | Claude. Every agent call goes here, inside your AWS account | The runner's IAM role may only invoke Anthropic models and inference profiles; reached through a VPC endpoint |
@@ -620,7 +642,7 @@ needs the signed-in user's Cognito ID token in the `Authorization` header.
 | `POST /api/cases` | `{"title", "request", "requester"}` | `{"case_id"}` |
 | `GET /api/cases/{id}` | | The case page: progress, questions, findings, activity, cost |
 | `GET /api/cases/{id}?doc=04-design.md` | | One document |
-| `POST /api/cases/{id}/respond` | `{"answers"}` or `{"outcome": "approve" \| "send_back" \| "reject", "comment"}` | `{"outcome"}` |
+| `POST /api/cases/{id}/respond` | `{"answers"}`; or `{"outcome": "approve" \| "send_back" \| "reject", "comment"}` at a gate; or `{"outcome": "reopen", "comment"}` for a rejected case | `{"outcome"}` |
 
 On AWS the person acting is always taken from the sign-in token, never from the request body.
 
@@ -631,8 +653,8 @@ pip install -e ".[dev]" "moto[s3,dynamodb]" cfn-lint -r infra/requirements.txt
 pytest
 ```
 
-74 tests cover the catalogue, the envelope and backlog rules, the path guard, the review routing,
-full pipeline runs (blockers, review rounds, conflicts, escalation, rejection, budget stop, spend caps), the API
+79 tests cover the catalogue, the envelope and backlog rules, the path guard, the review routing,
+full pipeline runs (blockers, review rounds, conflicts, escalation, rejection, reopening, budget stop, spend caps), the API
 views, the local portal server end to end, mock-by-default local runs, the state machine, the runner
 entrypoint, the Lambdas, the S3/DynamoDB store (with moto), the CDK stack (synth, `cfn-lint` and the Well-Architected controls), and the CI/CD deploy role and workflow.
 Tests that need moto, CDK or `cfn-lint` skip when those are not installed.

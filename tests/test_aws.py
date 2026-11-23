@@ -38,7 +38,16 @@ def check_states(states: dict, start: str) -> None:
 def test_state_machine_is_well_formed(catalogue):
     d = build_definition(catalogue.pipeline)
     check_states(d["States"], d["StartAt"])
-    assert d["StartAt"] == "intake.Start"
+    assert d["StartAt"] == "Start" and d["States"]["Start"]["Default"] == "intake.Start"
+
+
+def test_reopened_cases_resume_at_their_stage(catalogue):
+    states = build_definition(catalogue.pipeline)["States"]
+    targets = {c["And"][1]["StringEquals"]: c["Next"] for c in states["Start"]["Choices"]}
+    assert targets == {s.id: f"{s.id}.Resume" for s in catalogue.pipeline.stages}
+    assert states["analysis.Resume"]["Next"] == "analysis.Run"
+    assert states["design.Resume"]["Next"] == "design.Designer"
+    assert states["design.Resume"]["Parameters"]["round.$"] == "$.round"
 
 
 def test_disabled_gate_is_left_out(catalogue):
@@ -153,6 +162,7 @@ def lambda_env(tmp_path, monkeypatch):
 
     for mod in ("start_case", "respond"):
         monkeypatch.setattr(f"agentpipe.aws.lambdas.{mod}.boto3", FakeBoto())
+    monkeypatch.setenv("MAX_REVIEW_ROUNDS", "3")
     monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
     from agentpipe.config import pipeline_summary
     from agentpipe.catalogue import Catalogue
@@ -295,3 +305,33 @@ def test_aws_store_round_trip(monkeypatch):
         store.put_case(case)
         assert store.claim_pending(cid, "TOKEN-1") is True
         assert store.claim_pending(cid, "TOKEN-1") is False
+
+        # Only one of two simultaneous reopens may win.
+        case.update(status="rejected", pending=None)
+        store.put_case(case)
+        assert store.transition_status(cid, "rejected", "running") is True
+        assert store.transition_status(cid, "rejected", "running") is False
+
+
+def test_reopen_through_the_api(lambda_env):
+    from agentpipe.aws.lambdas import get_case, respond
+    store, sent = lambda_env
+    case = store.create_case("t", "x")
+    case.update(status="rejected", stage="analysis", round=1)
+    store.put_case(case)
+    cid = case["id"]
+    shown = json.loads(get_case.handler(api(case_id=cid), None)["body"])
+    assert shown["can_reopen"] and shown["reopen_stage"] == "analysis"
+
+    assert respond.handler(api({"outcome": "approve"}, cid), None)["statusCode"] == 400
+    assert respond.handler(api({"outcome": "reopen"}, cid), None)["statusCode"] == 400
+    resp = respond.handler(api({"outcome": "reopen", "comment": "Budget agreed"}, cid), None)
+    assert resp["statusCode"] == 200
+    _, started = sent.success[-1]
+    assert started["name"] == f"{cid}-reopen-1"
+    assert json.loads(started["input"]) == {"case_id": cid, "resume_stage": "analysis", "round": 2, "round_limit": 3}
+    saved = store.get_case(cid)
+    assert saved["status"] == "running" and saved["round"] == 2
+    assert store.list_decisions(cid)[-1]["by"] == "Marco G"
+    again = respond.handler(api({"outcome": "reopen", "comment": "again"}, cid), None)
+    assert again["statusCode"] == 400 and "only a rejected case" in again["body"]

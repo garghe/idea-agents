@@ -19,6 +19,7 @@ ROLE_LABELS = {
 APPROVER_LABELS = {"sponsor": "Sponsor", "product_owner": "Product owner", "lead_architect": "Lead architect",
                    "requester": "Requester", "security": "Security", "other": "Other"}
 OUTCOMES = {"approve", "send_back", "reject"}
+REOPEN = "reopen"
 
 
 def _gate_label(summary: dict, gate_id: str | None) -> str:
@@ -152,6 +153,10 @@ def activity(runs: list[dict], decisions: list[dict], blockers: list[dict]) -> l
             items.append({"at": b["answered_at"], "text": f"{b.get('answered_by', 'Someone')} answered {b['id']}",
                           "kind": "person"})
     for d in decisions:
+        if d["outcome"] == REOPEN:
+            items.append({"at": d["at"], "text": f"{d['by']} reopened the case at the {d.get('stage')} stage",
+                          "comment": d.get("comment") or None, "kind": "person"})
+            continue
         verb = {"approve": "approved", "send_back": "sent back", "reject": "rejected"}.get(d["outcome"], d["outcome"])
         what = d.get("gate") or d.get("kind")
         what = "escalated review" if what == "escalation" else str(what).replace("_", " ").replace("signoff", "sign-off")
@@ -189,12 +194,22 @@ def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
         "cost_usd": round(sum(r.get("cost_usd") or 0.0 for r in runs), 2),
         "budget_usd": summary.get("budget_usd"),
         "agent_runs": len(runs),
+        "can_reopen": case["status"] == REJECTED,
+        "reopen_stage": case["stage"] if case["status"] == REJECTED else None,
     }
 
 
 def check_response(case: dict, data: dict) -> str | None:
     """Return why a response cannot be accepted, or None. Same rules locally and on AWS."""
     status = case["status"]
+    if data.get("outcome") == REOPEN and status != REJECTED:
+        return f"only a rejected case can be reopened (status: {status})"
+    if status == REJECTED:
+        if data.get("outcome") != REOPEN:
+            return "a rejected case can only be reopened (outcome: reopen)"
+        if not (data.get("comment") or "").strip():
+            return "a comment is required when reopening: say what has changed"
+        return None
     if status == WAITING_ANSWERS:
         if not (data.get("answers") or "").strip():
             return "answers are required"
@@ -207,6 +222,18 @@ def check_response(case: dict, data: dict) -> str | None:
             return "a comment is required when sending back"
         return None
     return f"case is not waiting for anyone (status: {status})"
+
+
+def reopen_plan(case: dict, summary: dict) -> dict:
+    """Where a reopened case restarts: the stage it was rejected at, in a new round.
+
+    A reopened design review gets a fresh set of review rounds, as when an escalation is sent back.
+    """
+    stage = next(s for s in summary["stages"] if s["id"] == case["stage"])
+    new_round = int(case.get("round") or 1) + 1
+    limit = int(summary["max_review_rounds"])
+    round_limit = new_round + limit - 1 if stage["kind"] == "review" else limit
+    return {"stage": stage["id"], "round": new_round, "round_limit": round_limit}
 
 
 def check_new_case(data: dict) -> str | None:

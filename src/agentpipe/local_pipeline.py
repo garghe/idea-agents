@@ -12,9 +12,9 @@ import json
 import logging
 from typing import Callable
 
-from . import review
+from . import api, review
 from .catalogue import Catalogue
-from .config import Stage
+from .config import Stage, pipeline_summary
 from .runner import AgentOutputError, BudgetExceeded, StageRunner
 from .store import (DONE, FAILED, NEW, REJECTED, RUNNING, WAITING_ANSWERS, WAITING_ESCALATION,
                     WAITING_GATE, CaseStore, now_iso)
@@ -117,6 +117,28 @@ class LocalPipeline:
                 # A person reopened the review: give the panel a fresh set of rounds.
                 case["round_limit"] = case["round"] + self.cfg.limits.max_review_rounds - 1
         self.store.put_case(case)
+        return self.run(case_id)
+
+    def reopen(self, case_id: str, by: str = "unknown", comment: str = "") -> dict:
+        """Reopen a rejected case: the stage it was rejected at runs again with the comment as input."""
+        case = self.store.get_case(case_id)
+        problem = api.check_response(case, {"outcome": api.REOPEN, "comment": comment})
+        if problem:
+            raise PipelineError(problem)
+        if not self.store.transition_status(case_id, REJECTED, RUNNING):
+            raise PipelineError(f"case {case_id} has already been reopened")
+        plan = api.reopen_plan(case, pipeline_summary(self.cfg))
+        self.store.add_decision(case_id, {
+            "kind": "reopen", "gate": None, "stage": plan["stage"], "outcome": api.REOPEN,
+            "by": by, "comment": comment.strip(), "at": now_iso(),
+        })
+        n = len(self.store.list_docs(case_id, "answers/")) + 1
+        self.store.write_doc(case_id, f"answers/{n:02d}-{plan['stage']}-reopen.md",
+                             f"# Reopened by {by}: what has changed\n\n{comment.strip()}\n")
+        case.update(status=RUNNING, pending=None, round=plan["round"], round_limit=plan["round_limit"])
+        case.pop("finished_at", None)
+        self.store.put_case(case)
+        self.notify(f"[{case_id}] reopened by {by} at the {plan['stage']} stage")
         return self.run(case_id)
 
     # ------------------------------------------------------------------- stages

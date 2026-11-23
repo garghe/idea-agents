@@ -240,8 +240,30 @@ class _Builder:
             "Next": n("Designer"),
         }
 
+    def resume_entry(self, stages: list[Stage]) -> None:
+        """A reopened case starts a new execution with `resume_stage`; this jumps straight to it."""
+        choices = []
+        for stage in stages:
+            first = _name(stage, "Run") if stage.kind == "agent" else _name(stage, "Designer")
+            self.states[_name(stage, "Resume")] = {
+                "Type": "Pass",
+                "Comment": f"Reopened case: run {stage.id} again with the reopen comment as input",
+                "Parameters": {"case_id.$": "$.case_id", "round.$": "$.round", "round_limit.$": "$.round_limit"},
+                "Next": first,
+            }
+            choices.append({"And": [{"Variable": "$.resume_stage", "IsPresent": True},
+                                    {"Variable": "$.resume_stage", "StringEquals": stage.id}],
+                            "Next": _name(stage, "Resume")})
+        self.states["Start"] = {
+            "Type": "Choice",
+            "Comment": "New cases start at the first stage; reopened cases resume where they were rejected",
+            "Choices": choices,
+            "Default": self.entry(stages[0]),
+        }
+
     def build(self) -> dict:
         stages = list(self.cfg.stages)
+        self.resume_entry(stages)
         for i, stage in enumerate(stages):
             nxt = stages[i + 1] if i + 1 < len(stages) else None
             if stage.kind == "agent":
@@ -276,7 +298,7 @@ class _Builder:
                                   "Cause": "The case failed or timed out; see the case record."}
         return {
             "Comment": "Multi-agent delivery pipeline, generated from catalogue/pipeline.yaml",
-            "StartAt": self.entry(stages[0]),
+            "StartAt": "Start",
             "States": self.states,
         }
 

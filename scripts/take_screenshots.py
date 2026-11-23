@@ -98,6 +98,7 @@ def main() -> int:
             shot(f"/#/cases/{ids['clips']}", "case-design-signoff.png", "#decide-h")
             shot(f"/#/cases/{ids['news']}", "case-questions.png", "#answer-form")
             shot(f"/#/cases/{ids['ads']}", "case-backlog.png", ".tab", click='.tab[data-doc="05-backlog.json"]')
+            shot(f"/#/cases/{ids['rail']}", "case-rejected.png", "#reopen-h")
             shot("/#/new", "new-request.png", "#new-form", click="#fill-sample")
             browser.close()
         server.shutdown()

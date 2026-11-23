@@ -444,9 +444,19 @@
         (d.documents.indexOf('06-published.json') >= 0 ? ' and were published to Jira.' : '.') + '</p></section>';
     }
     var last = d.decisions[d.decisions.length - 1];
-    return '<section class="card"><h2>' + (c.status === 'rejected' ? 'Rejected' : 'Stopped') + '</h2><p style="margin:0">' +
-      (c.status === 'rejected' && last ? esc(last.by) + ' rejected this case' + (last.comment ? ': "' + esc(last.comment) + '"' : '.')
-        : esc(c.error || 'The case stopped. See the activity log.')) + '</p></section>';
+    if (c.status === 'rejected') {
+      var stageLabel = (d.progress.find(function (x) { return x.kind === 'stage' && x.id === d.reopen_stage; }) || {}).label || c.stage;
+      return '<section class="card action" aria-labelledby="reopen-h"><h2 id="reopen-h">Rejected</h2><p>' +
+        (last ? esc(last.by) + ' rejected this case' + (last.comment ? ': "' + esc(last.comment) + '"' : '.') : 'This case was rejected.') + '</p>' +
+        '<label class="field" for="reopen-comment">Reopen with a comment</label>' +
+        '<textarea class="input" id="reopen-comment" rows="3" placeholder="What has changed since it was rejected?" style="margin-bottom:8px"></textarea>' +
+        '<p class="muted small" style="margin:0 0 16px">Reopening sends the case back to the <strong>' + esc(stageLabel) +
+        '</strong> stage. The agents get your comment as input, and the case carries on from there.</p>' +
+        '<div class="btn-row"><button type="button" class="btn primary" id="reopen">Reopen case</button></div>' +
+        '<div class="error" id="action-error" role="alert"></div></section>';
+    }
+    return '<section class="card"><h2>Stopped</h2><p style="margin:0">' +
+      esc(c.error || 'The case stopped. See the activity log.') + '</p></section>';
   }
 
   function sideHtml(d) {
@@ -559,6 +569,25 @@
         }
       });
     });
+    var reopenBtn = document.getElementById('reopen');
+    if (reopenBtn) {
+      reopenBtn.addEventListener('click', async function () {
+        var comment = document.getElementById('reopen-comment').value.trim();
+        if (!comment) { err.textContent = 'Say what has changed before reopening the case.'; return; }
+        err.textContent = '';
+        reopenBtn.disabled = true;
+        reopenBtn.textContent = 'Reopening…';
+        try {
+          await call('/cases/' + encodeURIComponent(caseId) + '/respond', { method: 'POST', body: { outcome: 'reopen', comment: comment, by: actingAs() } });
+          toast('Case reopened. The agents are carrying on.');
+          casePage(caseId);
+        } catch (ex) {
+          err.textContent = ex.message;
+          reopenBtn.disabled = false;
+          reopenBtn.textContent = 'Reopen case';
+        }
+      });
+    }
     refreshWaitingCount();
     if (c.status === 'running' || c.status === 'new') {
       pollTimer = setTimeout(function () {
