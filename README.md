@@ -1,34 +1,57 @@
 # IDEA: Intake, Design & Evaluation Agents
 
-**IDEA takes a business request from idea to approved backlog.** Claude agents take the request
-("we need to deliver this new product") through clarification, value, analysis and a reviewed design,
-and end with a backlog of stories for delivery teams or build agents. It is the front half of an
-AI-assisted SDLC, with a web portal where people answer the agents' questions and make the decisions.
+**IDEA is an agentic platform with people in the loop.** A team of Claude agents, each with one
+role, takes a business request ("we need to deliver this new product") through clarification, value,
+analysis and a peer-reviewed design, and ends with a backlog of stories for delivery teams or build
+agents. People review the work and take the decisions at set points in the workflow. It is the front
+half of an AI-assisted SDLC, run from a web portal.
 
-Code owns the flow (stage order, gates, loop limits). Claude agents own the thinking inside each
-stage. Agents hand over through documents in a case file, never through chat history, and people
-stay in charge of every gate.
+- **Multiple agents, each with one job.** Nine agent roles plus four specialists: intake, value,
+  an analysis lead with data, security, operations and commercial specialists, a designer, three
+  reviewers working in parallel (architecture, security, operability), a review chair and a story
+  writer. Each role has its own instructions, model, tools and budget, shown on the portal's Roles page.
+- **Agents check each other.** The design is reviewed by three agents who do not see each other's
+  findings; the chair merges and flags conflicts; the designer must answer every finding.
+- **People decide.** Agents never approve their own work. People answer the agents' questions,
+  approve or send back at each gate, settle escalated reviews, and can reject or reopen a case.
+- **Code owns the flow.** Stage order, gates, review loops and spend limits are code, not agent
+  judgement. Agents hand over through documents in a case file, never through chat history.
+
+**Where people are in the loop**
+
+| When | Who | What they do |
+| --- | --- | --- |
+| An agent is missing something essential | The requester, sponsor or whoever the question is for | Answer the questions (and attach documents); the stage runs again with the answers |
+| After the value stage (off by default) | Sponsor | Go/no-go on the business case |
+| After analysis | Product owner | Scope check: approve, send back with a comment, or reject |
+| The review panel cannot agree, or runs out of rounds | Lead architect | Settle the escalated review: approve, send back with direction, or reject |
+| After the design review | Lead architect | Design sign-off |
+| After the stories are written | Product owner | Backlog release (then it goes to Jira) |
+| Any time | Anyone working on the case | Attach documents; reopen a rejected case with a comment saying what changed |
 
 ```mermaid
 flowchart LR
     R[Request] --> I[Intake agent]
     I --> V[Value agent]
     V --> A[Analysis lead + specialists]
-    A --> G1{Scope check}
+    A --> G1{{Scope check: person}}
     G1 --> D[Designer]
     D --> P[Reviewers in parallel:<br/>architecture, security, operability]
     P --> C[Chair]
     C -- revise --> D
-    C -- approved --> G2{Design sign-off}
-    C -- conflict or 3 rounds --> E{Lead architect}
+    C -- approved --> G2{{Design sign-off: person}}
+    C -- conflict or 3 rounds --> E{{Lead architect: person}}
     G2 --> S[Story writer]
-    S --> G3{Backlog release}
+    S --> G3{{Backlog release: person}}
     G3 --> J[Jira]
-    I & V & A & D & C -. blocked .-> Q[(Questions to the business)]
+    I & V & A & D & C -. blocked .-> Q[(Questions to people)]
+    classDef human fill:#FFF1DC,stroke:#C26A00,color:#7A4200
+    class G1,G2,G3,E,Q human
 ```
 
-Diamonds are decisions people make. Any agent can return `blocked` with questions; the case then
-waits, at no cost, until someone answers in the portal, and the same stage runs again with the answers.
+Rectangles are agents; orange shapes are where people review and decide. Any agent can return
+`blocked` with questions; the case then waits, at no cost, until someone answers in the portal, and
+the same stage runs again with the answers.
 
 People can attach supporting documents (PDF, Word, HTML, text, images) to a case at any time. The
 agents read them and cite them as `[A1 p.3]`: see [Attachments](#attachments-supporting-documents).

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "idea-agents"
 version = "0.1.0"
-description = "IDEA (Intake, Design & Evaluation Agents): Claude agents that turn a business request into a reviewed design and a story backlog."
+description = "IDEA (Intake, Design & Evaluation Agents): an agentic platform where multiple Claude agents, with people reviewing and deciding at set points, turn a business request into a reviewed design and a story backlog."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
