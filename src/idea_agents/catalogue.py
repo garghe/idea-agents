@@ -16,7 +16,7 @@ import yaml
 from .config import PipelineConfig, load_pipeline
 
 # Input tokens a role may list under `reads:` besides plain document names.
-SPECIAL_INPUTS = {"answers", "open-findings", "own-open-findings", "all-open-findings"}
+SPECIAL_INPUTS = {"answers", "attachments", "open-findings", "own-open-findings", "all-open-findings"}
 
 
 class CatalogueError(ValueError):

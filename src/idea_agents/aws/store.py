@@ -7,6 +7,7 @@ DynamoDB layout (one table):
        FINDING#<id>                one review finding
        BLOCKER#<id>                one question for the business
        DECISION#<at>#<n>           one gate or escalation decision
+       ATTACH#<nnnn>               one attached file (the file itself is in S3 under uploads/)
 Each item keeps the full record as JSON in `data`, which avoids DynamoDB number conversions.
 
 This module imports only the standard library and boto3, so Lambdas can use it too.
@@ -19,6 +20,8 @@ import os
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
+
+import re
 
 from ..store import CaseStore, check_doc_name
 
@@ -148,3 +151,41 @@ class AwsCaseStore(CaseStore):
 
     def list_decisions(self, case_id: str) -> list[dict]:
         return self._query(case_id, "DECISION#")
+
+    # -------------------------------------------------------- attachments
+    @staticmethod
+    def upload_key(case_id: str, att: dict) -> str:
+        """Where the original goes. GuardDuty scans everything under uploads/."""
+        if not re.match(r"^A\d+$", att["id"]) or not re.match(r"^[A-Za-z0-9._-]+$", att["file"]):
+            raise ValueError("invalid attachment")
+        return f"uploads/{case_id}/{att['id']}/{att['file']}"
+
+    def put_attachment(self, case_id: str, att: dict) -> None:
+        self._put(case_id, f"ATTACH#{int(att['id'][1:]):04d}", att)
+
+    def add_attachment(self, case_id: str, att: dict) -> dict:
+        """Take the next free id atomically, so two uploads at once never get the same one."""
+        n = len(self._query(case_id, "ATTACH#")) + 1
+        while True:
+            item = {**att, "id": f"A{n}"}
+            item["key"] = self.upload_key(case_id, item)
+            try:
+                self.table.put_item(
+                    Item={"pk": self._pk(case_id), "sk": f"ATTACH#{n:04d}", "data": json.dumps(item)},
+                    ConditionExpression="attribute_not_exists(sk)")
+                return item
+            except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+                n += 1
+
+    def list_attachments(self, case_id: str) -> list[dict]:
+        return self._query(case_id, "ATTACH#")
+
+    def put_attachment_bytes(self, case_id: str, att: dict, data: bytes) -> None:
+        self.s3.put_object(Bucket=self.bucket, Key=self.upload_key(case_id, att), Body=data,
+                           ContentType=att["content_type"])
+
+    def get_attachment_bytes(self, case_id: str, att: dict) -> bytes | None:
+        try:
+            return self.s3.get_object(Bucket=self.bucket, Key=self.upload_key(case_id, att))["Body"].read()
+        except self.s3.exceptions.NoSuchKey:
+            return None

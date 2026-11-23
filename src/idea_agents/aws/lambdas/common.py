@@ -8,6 +8,7 @@ import os
 import urllib.request
 
 import boto3
+from botocore.config import Config
 
 from ..store import AwsCaseStore
 
@@ -28,6 +29,24 @@ def store() -> AwsCaseStore:
 def pipeline_summary() -> dict:
     """The pipeline's stages and gates, passed in by the stack (generated from pipeline.yaml)."""
     return json.loads(os.environ["PIPELINE_JSON"])
+
+
+def upload_targets(atts: list[dict]) -> list[dict]:
+    """Short-lived signed S3 links, one per file, so the browser uploads straight to the case bucket.
+
+    The regional endpoint avoids a redirect (which would break the browser's CORS check). The link is
+    valid for 15 minutes and only for that key and content type. GuardDuty scans the file on arrival.
+    """
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    s3 = boto3.client("s3", region_name=region, endpoint_url=f"https://s3.{region}.amazonaws.com",
+                      config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
+    bucket = os.environ["CASES_BUCKET"]
+    return [{
+        "id": a["id"], "name": a["name"], "method": "PUT",
+        "url": s3.generate_presigned_url("put_object", ExpiresIn=900, Params={
+            "Bucket": bucket, "Key": a["key"], "ContentType": a["content_type"]}),
+        "headers": {"Content-Type": a["content_type"]},
+    } for a in atts]
 
 
 def response(status: int, body: dict) -> dict:

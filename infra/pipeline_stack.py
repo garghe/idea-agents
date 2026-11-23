@@ -8,6 +8,9 @@
                                        │
                                        └── S3 (case documents, versioned) + DynamoDB (case records)
 
+  Browser ── signed S3 link ── uploads/ ── GuardDuty malware scan ── EventBridge ── ingest Lambda
+                                                                   (text into the case file)
+
   CloudWatch alarms and an optional AWS Budgets limit ── SNS ── email
 
 The state machine definition is generated from catalogue/pipeline.yaml. The README maps each part
@@ -17,9 +20,13 @@ of this stack to the AWS Well-Architected pillars.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack, Tags
+import jsii
+from aws_cdk import BundlingOptions, CfnOutput, DockerImage, Duration, ILocalBundling, RemovalPolicy, Stack, Tags
 from aws_cdk import aws_apigateway as apigw
 from aws_cdk import aws_budgets as budgets
 from aws_cdk import aws_cloudfront as cloudfront
@@ -31,6 +38,9 @@ from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr_assets as ecr_assets
 from aws_cdk import aws_ecs as ecs
+from aws_cdk import aws_events as events
+from aws_cdk import aws_events_targets as targets
+from aws_cdk import aws_guardduty as guardduty
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
@@ -39,6 +49,7 @@ from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subs
+from aws_cdk import aws_sqs as sqs
 from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_stepfunctions as sfn
 from constructs import Construct
@@ -49,9 +60,29 @@ from idea_agents.config import PipelineConfig, pipeline_summary
 from idea_agents.roles import roles_summary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+INGEST_DEPS = REPO_ROOT / ".build" / "ingest-deps"  # pip cache for the ingest Lambda (git-ignored)
+PYPDF = "pypdf>=5,<8"
 CONTAINER_NAME = "runner"
 PORTAL_URL_PARAMETER = "/idea/portal-url"
 LOG_RETENTION = logs.RetentionDays.SIX_MONTHS
+
+
+@jsii.implements(ILocalBundling)
+class _IngestBundle:
+    """Builds the ingest Lambda's code without Docker: the idea_agents package plus pypdf.
+
+    pypdf is pure Python, so a wheel installed here runs on Lambda's Arm runtime as it is.
+    The install is cached in .build/ so repeated synths do not download it again.
+    """
+
+    def try_bundle(self, output_dir: str, *args, **kwargs) -> bool:
+        if not (INGEST_DEPS / "pypdf").is_dir():
+            subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--no-deps", "--target",
+                            str(INGEST_DEPS), PYPDF], check=True)
+        shutil.copytree(INGEST_DEPS, output_dir, dirs_exist_ok=True)
+        shutil.copytree(REPO_ROOT / "src" / "idea_agents", Path(output_dir) / "idea_agents", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        return True
 
 
 class PipelineStack(Stack):
@@ -123,6 +154,10 @@ class PipelineStack(Stack):
             self, "CaseDocuments", versioned=True, enforce_ssl=True,
             encryption=s3.BucketEncryption.S3_MANAGED,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            # Browsers upload attachments straight here with a signed link (PUT only). The signature,
+            # not CORS, is what authorises an upload; CORS just lets the portal's page make the call.
+            cors=[s3.CorsRule(allowed_methods=[s3.HttpMethods.PUT], allowed_origins=["https://*.cloudfront.net"],
+                              allowed_headers=["content-type"], max_age=3000)],
             server_access_logs_bucket=log_bucket, server_access_logs_prefix="case-documents/",
             removal_policy=RemovalPolicy.RETAIN,
         )
@@ -199,12 +234,12 @@ class PipelineStack(Stack):
                                            resource_name=PORTAL_URL_PARAMETER.lstrip("/"))
 
         def fn(name: str, module: str, extra_env: dict | None = None, timeout: int = 30,
-               writes: bool = True) -> lambda_.Function:
+               writes: bool = True, fn_code: lambda_.Code | None = None, memory: int = 256) -> lambda_.Function:
             f = lambda_.Function(
                 self, name, runtime=lambda_.Runtime.PYTHON_3_12, architecture=lambda_.Architecture.ARM_64,
-                code=code, handler=f"idea_agents.aws.lambdas.{module}.handler",
+                code=fn_code or code, handler=f"idea_agents.aws.lambdas.{module}.handler",
                 environment={**common_env, **(extra_env or {})},
-                timeout=Duration.seconds(timeout), memory_size=256, tracing=lambda_.Tracing.ACTIVE,
+                timeout=Duration.seconds(timeout), memory_size=memory, tracing=lambda_.Tracing.ACTIVE,
                 log_group=logs.LogGroup(self, f"{name}Logs", retention=LOG_RETENTION),
             )
             if writes:
@@ -231,6 +266,62 @@ class PipelineStack(Stack):
         get_fn = fn("GetCase", "get_case", writes=False)
         list_fn = fn("ListCases", "list_cases", writes=False)
         roles_fn = fn("ListRoles", "list_roles", writes=False)
+        attach_fn = fn("AttachFiles", "attach")
+
+        # ---------------------------------------------------------------- attachments: scan, then ingest
+        # Uploads land under uploads/. GuardDuty Malware Protection for S3 scans each new object and
+        # reports the result to EventBridge; the ingest function then extracts the text (or rejects
+        # the file). GuardDuty needs this role to manage its own EventBridge rule and read the objects.
+        scan_role = iam.Role(self, "UploadScanRole",
+                             assumed_by=iam.ServicePrincipal("malware-protection-plan.guardduty.amazonaws.com"),
+                             description="GuardDuty Malware Protection for S3: scans attachment uploads")
+        gd_rule = f"arn:aws:events:{self.region}:{self.account}:rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*"
+        for sid, actions, resources, conditions in (
+            ("ManagedRule", ["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets"],
+             [gd_rule], {"StringLike": {"events:ManagedBy": "malware-protection-plan.guardduty.amazonaws.com"}}),
+            ("WatchManagedRule", ["events:DescribeRule", "events:ListTargetsByRule"], [gd_rule], None),
+            ("TagScanned", ["s3:PutObjectTagging", "s3:GetObjectTagging", "s3:PutObjectVersionTagging",
+                            "s3:GetObjectVersionTagging"], [bucket.arn_for_objects("uploads/*")], None),
+            ("BucketEvents", ["s3:PutBucketNotification", "s3:GetBucketNotification"], [bucket.bucket_arn], None),
+            ("Validation", ["s3:PutObject"], [bucket.arn_for_objects("malware-protection-resource-validation-object")], None),
+            ("Ownership", ["s3:ListBucket"], [bucket.bucket_arn], None),
+            ("Scan", ["s3:GetObject", "s3:GetObjectVersion"], [bucket.arn_for_objects("uploads/*")], None),
+        ):
+            scan_role.add_to_policy(iam.PolicyStatement(sid=sid, actions=actions, resources=resources,
+                                                        conditions=conditions))
+        scan_plan = guardduty.CfnMalwareProtectionPlan(
+            self, "UploadScan", role=scan_role.role_arn,
+            protected_resource=guardduty.CfnMalwareProtectionPlan.CFNProtectedResourceProperty(
+                s3_bucket=guardduty.CfnMalwareProtectionPlan.S3BucketProperty(
+                    bucket_name=bucket.bucket_name, object_prefixes=["uploads/"])),
+            actions=guardduty.CfnMalwareProtectionPlan.CFNActionsProperty(
+                tagging=guardduty.CfnMalwareProtectionPlan.CFNTaggingProperty(status="ENABLED")),
+        )
+        scan_plan.node.add_dependency(scan_role)  # the role's policy must exist before GuardDuty checks it
+
+        ingest_code = lambda_.Code.from_asset(
+            str(REPO_ROOT / "src"), exclude=["**/__pycache__", "*.egg-info", "**/*.pyc"],
+            bundling=BundlingOptions(
+                image=DockerImage.from_registry("public.ecr.aws/sam/build-python3.12"),
+                local=_IngestBundle(),  # used when it can run; Docker is only the fallback
+                command=["bash", "-c", f"pip install --no-deps --target /asset-output '{PYPDF}' && "
+                                       "cp -r /asset-input/idea_agents /asset-output/"]))
+        ingest_fn = fn("IngestAttachment", "ingest", timeout=120, fn_code=ingest_code, memory=1024)
+        ingest_dlq = sqs.Queue(self, "IngestDeadLetters", enforce_ssl=True,
+                               encryption=sqs.QueueEncryption.SQS_MANAGED, retention_period=Duration.days(14))
+        events.Rule(
+            self, "UploadScanned",
+            description="GuardDuty finished scanning an attachment: ingest it",
+            event_pattern=events.EventPattern(
+                source=["aws.guardduty"],
+                detail_type=["GuardDuty Malware Protection Object Scan Result"],
+                detail={"s3ObjectDetails": {"bucketName": [bucket.bucket_name],
+                                            "objectKey": [{"prefix": "uploads/"}]}}),
+            targets=[targets.LambdaFunction(ingest_fn, dead_letter_queue=ingest_dlq, retry_attempts=4,
+                                            max_event_age=Duration.hours(2))],
+        )
+        alarm("IngestFailed", ingest_dlq.metric_approximate_number_of_messages_visible(period=Duration.minutes(5)),
+              "An attachment scan result could not be processed (see the IngestDeadLetters queue)")
 
         # The roles summary (descriptions, models, budgets) for the portal's Roles page, published from
         # the same catalogue that is built into the runner image. prune=False: never touch case files.
@@ -342,6 +433,7 @@ class PipelineStack(Stack):
         one = cases.add_resource("{case_id}")
         one.add_method("GET", apigw.LambdaIntegration(get_fn))
         one.add_resource("respond").add_method("POST", apigw.LambdaIntegration(respond_fn))
+        one.add_resource("attachments").add_method("POST", apigw.LambdaIntegration(attach_fn))
         alarm("ApiServerErrors", rest_api.metric_server_error(period=Duration.minutes(5)),
               "The API returned 5xx errors")
 

@@ -89,6 +89,32 @@ class CaseStore(ABC):
     @abstractmethod
     def list_decisions(self, case_id: str) -> list[dict]: ...
 
+    # --- attachments (files people attach; see idea_agents.attachments) ----------
+    @abstractmethod
+    def put_attachment(self, case_id: str, att: dict) -> None: ...
+
+    @abstractmethod
+    def list_attachments(self, case_id: str) -> list[dict]: ...
+
+    @abstractmethod
+    def put_attachment_bytes(self, case_id: str, att: dict, data: bytes) -> None: ...
+
+    @abstractmethod
+    def get_attachment_bytes(self, case_id: str, att: dict) -> bytes | None: ...
+
+    def add_attachment(self, case_id: str, att: dict) -> dict:
+        """Give the record the next id (A1, A2, ...) and save it. Stores that can race override this."""
+        n = max((int(a["id"][1:]) for a in self.list_attachments(case_id)), default=0) + 1
+        att = {**att, "id": f"A{n}"}
+        self.put_attachment(case_id, att)
+        return att
+
+    def get_attachment(self, case_id: str, att_id: str) -> dict:
+        for a in self.list_attachments(case_id):
+            if a["id"] == att_id:
+                return a
+        raise KeyError(f"no such attachment: {att_id}")
+
     def claim_pending(self, case_id: str, token: str) -> bool:
         """Take the waiting task token before acting on it. Stores that can race override this."""
         return True
@@ -152,7 +178,7 @@ class LocalCaseStore(CaseStore):
         path = self._dir(case_id) / "records.json"
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
-        return {"runs": [], "findings": {}, "blockers": {}, "decisions": []}
+        return {"runs": [], "findings": {}, "blockers": {}, "decisions": [], "attachments": {}}
 
     def _save_records(self, case_id: str, records: dict) -> None:
         path = self._dir(case_id) / "records.json"
@@ -231,3 +257,27 @@ class LocalCaseStore(CaseStore):
 
     def list_decisions(self, case_id: str) -> list[dict]:
         return self._records(case_id)["decisions"]
+
+    # attachments: records in records.json, files in uploads/<id>-<file>
+    def put_attachment(self, case_id: str, att: dict) -> None:
+        rec = self._records(case_id)
+        rec.setdefault("attachments", {})[att["id"]] = att
+        self._save_records(case_id, rec)
+
+    def list_attachments(self, case_id: str) -> list[dict]:
+        atts = list(self._records(case_id).get("attachments", {}).values())
+        return sorted(atts, key=lambda a: int(a["id"][1:]))
+
+    def _upload_path(self, case_id: str, att: dict) -> Path:
+        if not re.match(r"^A\d+$", att["id"]) or not re.match(r"^[A-Za-z0-9._-]+$", att["file"]):
+            raise ValueError("invalid attachment")
+        return self._dir(case_id) / "uploads" / f"{att['id']}-{att['file']}"
+
+    def put_attachment_bytes(self, case_id: str, att: dict, data: bytes) -> None:
+        path = self._upload_path(case_id, att)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def get_attachment_bytes(self, case_id: str, att: dict) -> bytes | None:
+        path = self._upload_path(case_id, att)
+        return path.read_bytes() if path.exists() else None

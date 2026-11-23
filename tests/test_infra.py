@@ -70,7 +70,7 @@ def test_stack_shape(synth):
 
 def test_every_api_method_needs_sign_in(synth):
     methods = resources(synth, "AWS::ApiGateway::Method")
-    assert len(methods) == 5  # roles, list cases, start case, get case, respond
+    assert len(methods) == 6  # roles, list cases, start case, get case, respond, attach files
     assert all(m["Properties"]["AuthorizationType"] == "COGNITO_USER_POOLS" for m in methods)
 
 
@@ -206,3 +206,43 @@ def test_roles_summary_is_published_without_touching_case_files(synth):
     deploys = [r["Properties"] for r in resources(synth, "Custom::CDKBucketDeployment")
                if r["Properties"].get("DestinationBucketKeyPrefix") == "catalogue/"]
     assert len(deploys) == 1 and deploys[0]["Prune"] is False
+
+
+# ------------------------------------------------------------------ attachments
+def test_uploads_are_scanned_before_use(synth):
+    plan = resources(synth, "AWS::GuardDuty::MalwareProtectionPlan")
+    assert len(plan) == 1
+    props = plan[0]["Properties"]
+    assert props["ProtectedResource"]["S3Bucket"]["ObjectPrefixes"] == ["uploads/"]
+    assert props["Actions"]["Tagging"]["Status"] == "ENABLED"
+    roles = [r for r in resources(synth, "AWS::IAM::Role")
+             if "malware-protection-plan.guardduty.amazonaws.com" in json.dumps(r["Properties"]["AssumeRolePolicyDocument"])]
+    assert len(roles) == 1
+
+    rules = [r["Properties"] for r in resources(synth, "AWS::Events::Rule")
+             if r["Properties"].get("EventPattern", {}).get("source") == ["aws.guardduty"]]
+    assert len(rules) == 1
+    pattern = rules[0]["EventPattern"]
+    assert pattern["detail-type"] == ["GuardDuty Malware Protection Object Scan Result"]
+    assert pattern["detail"]["s3ObjectDetails"]["objectKey"] == [{"prefix": "uploads/"}]
+    target = rules[0]["Targets"][0]
+    assert "DeadLetterConfig" in target and target["RetryPolicy"]["MaximumRetryAttempts"] == 4
+    alarms = [a["Properties"] for a in resources(synth, "AWS::CloudWatch::Alarm")
+              if "scan result could not be processed" in a["Properties"].get("AlarmDescription", "")]
+    assert len(alarms) == 1 and alarms[0]["AlarmActions"]
+
+
+def test_ingest_lambda_is_bundled_with_pypdf(synth):
+    fns = [r["Properties"] for r in resources(synth, "AWS::Lambda::Function")
+           if r["Properties"].get("Handler") == "idea_agents.aws.lambdas.ingest.handler"]
+    assert len(fns) == 1 and fns[0]["MemorySize"] == 1024
+    asset = fns[0]["Code"]["S3Key"].split(".")[0]
+    folder = synth.parent / f"asset.{asset}"
+    assert (folder / "pypdf").is_dir() and (folder / "idea_agents" / "attachments.py").is_file()
+
+
+def test_case_bucket_allows_browser_uploads_only_by_put(synth):
+    buckets = [r["Properties"] for r in resources(synth, "AWS::S3::Bucket") if "CorsConfiguration" in r["Properties"]]
+    assert len(buckets) == 1
+    rule = buckets[0]["CorsConfiguration"]["CorsRules"][0]
+    assert rule["AllowedMethods"] == ["PUT"] and rule["AllowedOrigins"] == ["https://*.cloudfront.net"]

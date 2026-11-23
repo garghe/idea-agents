@@ -55,3 +55,15 @@ limits:
   case_budget_usd: 40
   # Validation retries when an agent returns an output that fails its schema.
   output_retries: 1
+
+# Files people attach to a case (any time while it is open). Each becomes text in the case file,
+# which agents read and cite as [A1 p.3]. Images stay images: agents open them directly.
+attachments:
+  max_files: 20
+  max_file_mb: 20
+  # Bedrock accepts images up to 3.75 MB each.
+  max_image_mb: 3.75
+  max_total_mb: 100
+  types: [pdf, docx, html, htm, md, txt, csv, png, jpg, jpeg, gif, webp]
+  # On AWS, a stage waits up to this long for files still being uploaded or scanned.
+  wait_seconds: 300

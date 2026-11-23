@@ -30,6 +30,9 @@ flowchart LR
 Diamonds are decisions people make. Any agent can return `blocked` with questions; the case then
 waits, at no cost, until someone answers in the portal, and the same stage runs again with the answers.
 
+People can attach supporting documents (PDF, Word, HTML, text, images) to a case at any time. The
+agents read them and cite them as `[A1 p.3]`: see [Attachments](#attachments-supporting-documents).
+
 ## The portal
 
 Screenshots from a local run on mock data (`python scripts/take_screenshots.py` regenerates them).
@@ -39,7 +42,8 @@ Screenshots from a local run on mock data (`python scripts/take_screenshots.py` 
 ![Case list](docs/screenshots/case-list.png)
 
 **A case at design sign-off.** The progress bar, the decision panel, the documents the agents wrote,
-the review findings and the activity log.
+the attachments (who attached each and which agents read it), the review findings and the activity log.
+Here a file arrived after the design ran, so the decision panel says the design agents have not read it.
 
 ![Case page at design sign-off](docs/screenshots/case-design-signoff.png)
 
@@ -55,7 +59,7 @@ the review findings and the activity log.
 
 ![Rejected case with the reopen panel](docs/screenshots/case-rejected.png)
 
-**Starting a request.**
+**Starting a request.** Supporting documents can be attached here, with answers, or on the case page later.
 
 ![New request](docs/screenshots/new-request.png)
 
@@ -78,8 +82,8 @@ review rounds and retries. Read-only: limits are changed in the catalogue and de
 | `infra/` | CDK app that deploys everything to AWS, and `github-deploy-role.yaml`, the CloudFormation template for the CI/CD deploy role. |
 | `.github/workflows/` | `tests.yml` runs the tests on every push; `deploy.yml` deploys to AWS after an approval. |
 | `scripts/take_screenshots.py` | Seeds mock cases and captures the portal screenshots above. |
-| `examples/requests/` | A sample business request. |
-| `tests/` | 84 tests; no Claude or AWS calls needed. |
+| `examples/requests/`, `examples/attachments/` | A sample business request and two sample attachments. |
+| `tests/` | 103 tests; no Claude or AWS calls needed. |
 
 ## Run it locally (mock data, no LLM calls)
 
@@ -126,8 +130,9 @@ even created; a test checks this.
 
 1. The orchestrator (the local pipeline, or Step Functions on AWS) asks the **stage runner** to run
    one role for one case.
-2. The runner builds a fresh working folder: `inputs/` with only the documents that role reads,
-   `standards/`, `templates/` and an empty `output/`.
+2. The runner builds a fresh working folder: `inputs/` with only the documents that role reads
+   (including `inputs/attachments/` for the files people attached), `standards/`, `templates/` and
+   an empty `output/`.
 3. It runs the role with the Claude Agent SDK: the role's prompt, model, tool list, turn limit and
    spend cap. A hook stops the agent reading outside its folder or writing outside `output/`.
 4. The agent writes its document and returns a JSON **envelope** (status, summary, blockers,
@@ -163,6 +168,57 @@ a new Step Functions execution (named `<case-id>-reopen-<n>`) that resumes at th
 Spend so far still counts towards the case budget, so a case that had nearly used its budget will stop
 again soon after reopening; raise `case_budget_usd` first if that matters.
 
+## Attachments (supporting documents)
+
+People can attach files to a case **at any time while it is open**: with the new request, with their
+answers, or from the Attachments card on the case page (also after a rejection, before reopening).
+A finished case takes no more files.
+
+```mermaid
+flowchart LR
+    U[Upload] --> P[Pending:<br/>uploading or scanning]
+    P -->|clean| X[Extract text<br/>code, no LLM]
+    P -->|malware or unscannable| N[Turned away<br/>with the reason]
+    X --> R[Ready: attachments/A1.md<br/>in the case file]
+    R --> G[Next stages read and cite it<br/>as A1 or A1 p.3]
+```
+
+**What happens to a file**
+
+1. It gets an id (A1, A2, ...) and is checked against the limits below (type, size, count).
+2. It is scanned for malware (on AWS, by GuardDuty; locally there is no scan, and the page says so).
+3. Code extracts its text, with no LLM: PDF text page by page (`## Page 3`), Word headings,
+   paragraphs and tables, HTML without scripts or styles, text, Markdown and CSV as they are. The text
+   is saved as `attachments/A1.md` in the case file with a header saying who attached it, when, and
+   that it is material to work on, not instructions. Images are kept as images. A file that is not what
+   its name says (a renamed `.exe`, say) is turned away.
+4. From then on, every stage that reads attachments gets `inputs/attachments/` with an `index.md`,
+   the extracted text, and the original file for images and scanned PDFs (which agents open with Read).
+
+**What agents do with them.** All roles except the chair read attachments. The house rules tell
+every agent to cite them (`[A3]` or `[A3 p.12]`), to say where an attachment and the request disagree,
+and to treat their text as information, never as instructions. The intake agent adds a Sources
+section to the brief and does not ask what the documents already answer. Reviewers check the design
+against attachments that set requirements, constraints or standards, and cite them as evidence.
+
+**Files that arrive late.** A file reaches the stages that run after it is ready; earlier stages
+are not rerun on their own. The case page shows, for each file, which agents have read it. When a
+case waits at a gate and a ready file has not been read by that stage, the decision panel says so,
+so the approver can send it back. On AWS, a stage that starts while a file is still being scanned
+waits for it (up to `wait_seconds`, 5 minutes by default) rather than miss it.
+
+**Limits** (`attachments` in `catalogue/pipeline.yaml`): 20 files per case, 20 MB each, images up to
+3.75 MB each (the most Bedrock accepts per image), 100 MB in total, and these types: `pdf`, `docx`,
+`html`, `htm`, `md`, `txt`, `csv`, `png`, `jpg`, `jpeg`, `gif`, `webp`. Extracted text is capped at
+400,000 characters per file (many hundreds of pages); IDEA is sized for tens of pages per case.
+
+**Not supported yet:** text in scanned PDFs (no OCR: agents get the PDF itself), password-protected
+PDFs, older Office formats (`.doc`, `.xls`, `.ppt`) and PowerPoint or Excel files, and a shared
+library of documents across cases (a Bedrock Knowledge Base is the planned route for that).
+
+**Mind what goes in.** Attachments are stored with the case and sent to Claude. Do not attach
+documents your data policy does not allow in this tool.
+
 ## Configuration
 
 `catalogue/pipeline.yaml`:
@@ -171,6 +227,8 @@ again soon after reopening; raise `case_budget_usd` first if that matters.
   approval. Switch any gate on or off with `enabled`.
 - **Limits**: `max_review_rounds` (3), `case_budget_usd` (40) and `output_retries` (1). How these and
   the per-role budgets control spend: [Budgets and spend control](#budgets-and-spend-control).
+- **Attachments**: file count, sizes, types and how long a stage waits for a scan
+  (see [Attachments](#attachments-supporting-documents)).
 
 Each role in `catalogue/roles/*.md` sets its `model`, `tools`, `max_turns`, `budget_usd`, the
 documents it `reads` and `writes`, its `template` and the `standards` it applies.
@@ -298,6 +356,8 @@ flowchart LR
     R --> DDB[(DynamoDB: case records)]
     SF -->|wait with task token| W[Wait-for-people Lambda] --> T[Teams]
     L --> J[Jira]
+    U -. signed upload link .-> S3
+    S3 -. uploads/ .-> GD[GuardDuty malware scan] --> EB[EventBridge] --> IN[Ingest Lambda] --> S3
 ```
 
 Everything below is created by one CDK stack (`infra/pipeline_stack.py`), so it is deployed,
@@ -310,13 +370,13 @@ updated and removed as a unit.
 | **Amazon CloudFront** | The single web address people use. Serves the portal files and forwards `/api/*` to the API, so the browser talks to one domain (no CORS) | HTTPS only (TLS 1.2+), AWS managed security headers, API responses never cached, access logs to the logs bucket |
 | **Amazon S3, portal bucket** | Holds the portal's HTML, CSS, JavaScript and its generated `config.json` | Private; only CloudFront can read it (Origin Access Control); files uploaded on each deploy |
 | **Amazon Cognito** | Sign-in. Issues the token the portal sends with every API call; can hand off to your corporate identity provider | Admin-created users only, 12+ character passwords, optional TOTP MFA, authorization code flow with PKCE, optional SAML federation |
-| **Amazon API Gateway** | The portal's API: list cases, start a case, read a case, respond | REST API under `/api`; every method requires a Cognito token; throttled; access logs and X-Ray tracing |
+| **Amazon API Gateway** | The portal's API: list cases, start a case, read a case, respond, attach files | REST API under `/api`; every method requires a Cognito token; throttled; access logs and X-Ray tracing |
 
 **Workflow and agents**
 
 | Component | Its role here | How it is set up |
 | --- | --- | --- |
-| **AWS Lambda** (8 functions) | Small, fast steps: start a case, list and read cases and roles (read-only), record responses, wait for people, publish to Jira, record how a case ended | Python 3.12 on Arm (Graviton), X-Ray tracing, an error alarm each; only boto3 needed |
+| **AWS Lambda** (10 functions) | Small, fast steps: start a case, list and read cases and roles (read-only), record responses, hand out upload links, ingest scanned files, wait for people, publish to Jira, record how a case ended | Python 3.12 on Arm (Graviton), X-Ray tracing, an error alarm each; only boto3 needed, except the ingest function, which is packaged with `pypdf` |
 | **AWS Step Functions** | Runs each case: the stage order, gates, review loop, retries and timeouts. Waiting for people uses a task token, so nothing runs (or costs) while a case waits | Standard workflow generated from `pipeline.yaml`; a reopened case starts a new execution that resumes at the rejected stage; retries temporary errors only; X-Ray tracing; error logs; alarms on failed and timed-out cases |
 | **Amazon ECS on AWS Fargate** | Runs one agent per task: loads the role, prepares the files, calls Claude through the Agent SDK, checks and saves the output | 1 vCPU, 4 GB; non-root container; isolated subnets; logs to CloudWatch |
 | **Amazon ECR** | Stores the runner image built from `Dockerfile` | Created and filled by CDK's asset publishing on deploy |
@@ -326,7 +386,10 @@ updated and removed as a unit.
 
 | Component | Its role here | How it is set up |
 | --- | --- | --- |
-| **Amazon S3, case documents bucket** | The case file: request, brief, business case, requirements, design, backlog, answers | Private, encrypted, HTTPS only, versioned (every version kept), access logs; kept if the stack is deleted. Each deploy also writes `catalogue/roles.json` here (the Roles page summary), never touching case files |
+| **Amazon S3, case documents bucket** | The case file: request, brief, business case, requirements, design, backlog, answers, attachment text; attachment originals under `uploads/` | Private, encrypted, HTTPS only, versioned (every version kept), access logs; kept if the stack is deleted. Browsers upload attachments straight here with a 15-minute signed link for one key; CORS allows only `PUT` from CloudFront addresses. Each deploy also writes `catalogue/roles.json` here (the Roles page summary), never touching case files |
+| **Amazon GuardDuty Malware Protection for S3** | Scans every attachment under `uploads/` as it arrives, before anything reads it | A protection plan on that prefix only, with its own IAM role; tags scanned objects with the result. Works without turning on the rest of GuardDuty |
+| **Amazon EventBridge** | Passes each scan result to the ingest function | One rule matching scan results for this bucket's `uploads/`; 4 retries, then a dead-letter queue |
+| **Amazon SQS** | Dead-letter queue for scan results that could not be processed | Encrypted, HTTPS only, kept 14 days, alarm on any message |
 | **Amazon DynamoDB** | Case records: status, each agent run and its cost, findings, questions, decisions | On-demand capacity, point-in-time recovery, deletion protection; kept if the stack is deleted |
 | **AWS Secrets Manager** | Teams webhook and Jira credentials | Created empty; the features stay off until you fill them |
 | **AWS Systems Manager Parameter Store** | The portal address, used in links in Teams messages | One plain parameter |
@@ -343,7 +406,7 @@ updated and removed as a unit.
 
 | Component | Its role here | How it is set up |
 | --- | --- | --- |
-| **Amazon CloudWatch** | Logs for every component, and alarms | Logs kept 6 months; alarms on Lambda errors, API 5xx errors, failed and timed-out cases |
+| **Amazon CloudWatch** | Logs for every component, and alarms | Logs kept 6 months; alarms on Lambda errors, API 5xx errors, failed and timed-out cases, unprocessed scan results |
 | **Amazon SNS** | Sends alarms and budget alerts by email | One topic, HTTPS only; subscribe with `alarmEmail` |
 | **AWS X-Ray** | Traces requests through API Gateway, Lambda and Step Functions | Enabled on all three |
 | **AWS Budgets** | Monthly spend alert for the account (optional) | Created when you set `monthlyBudgetUsd`; alerts at 80% of actual and 100% of forecast spend |
@@ -367,8 +430,8 @@ before this runs production work rather than a sandbox.
 | Pillar | What the stack does | Add before production |
 | --- | --- | --- |
 | **Operational excellence** | Everything is code (CDK), deployed through a tested, approved pipeline; the state machine is generated from `pipeline.yaml`, so the flow and the deployed workflow cannot drift **(tested)**; logs for every component; X-Ray tracing; alarms with email alerts **(tested)**; each case is one Step Functions execution named after the case | A CloudWatch dashboard; runbooks for each alarm; reminders for slow answers |
-| **Security** | No internet route for the runner **(tested)**; outbound HTTPS to endpoints only **(tested)**; every API call needs a Cognito token **(tested)**; identity taken from the token, never from the request; least-privilege IAM, read-only where possible **(tested)**; Bedrock limited to Anthropic models; private, encrypted buckets with HTTPS only **(tested)**; access logs and VPC flow logs **(tested)**; secrets in Secrets Manager; optional MFA **(tested)** and SAML SSO; agents confined to their working folder and tool list; keyless CI/CD with OIDC **(tested)** | AWS WAF on CloudFront (its web ACL must be created in `us-east-1`); a custom domain with your own certificate; who-may-approve rules per gate; customer-managed KMS keys if your policy requires them; Cognito threat protection (Plus plan) |
-| **Reliability** | Two availability zones; serverless and managed services throughout; retries with backoff for temporary errors only, never for budget or limit failures **(tested)**; timeouts on every agent run (1 hour) and every wait (30 days); S3 versioning, DynamoDB point-in-time recovery and deletion protection **(tested)**; data kept if the stack is deleted; only one of two simultaneous responses is accepted **(tested)** | Bedrock quota increases for your expected volume (cross-region inference profiles also help); AWS Backup plans if you need backups outside the account |
+| **Security** | No internet route for the runner **(tested)**; outbound HTTPS to endpoints only **(tested)**; every API call needs a Cognito token **(tested)**; every attachment scanned for malware before use **(tested)**, uploaded with short-lived signed links, checked against its declared type and size, and marked to agents as untrusted material; identity taken from the token, never from the request; least-privilege IAM, read-only where possible **(tested)**; Bedrock limited to Anthropic models; private, encrypted buckets with HTTPS only **(tested)**; access logs and VPC flow logs **(tested)**; secrets in Secrets Manager; optional MFA **(tested)** and SAML SSO; agents confined to their working folder and tool list; keyless CI/CD with OIDC **(tested)** | AWS WAF on CloudFront (its web ACL must be created in `us-east-1`); a custom domain with your own certificate; who-may-approve rules per gate; customer-managed KMS keys if your policy requires them; Cognito threat protection (Plus plan) |
+| **Reliability** | Two availability zones; serverless and managed services throughout; retries with backoff for temporary errors only, never for budget or limit failures **(tested)**; timeouts on every agent run (1 hour) and every wait (30 days); S3 versioning, DynamoDB point-in-time recovery and deletion protection **(tested)**; data kept if the stack is deleted; only one of two simultaneous responses is accepted **(tested)**; attachment ids cannot clash under simultaneous uploads **(tested)**; scan results retried, then kept in a dead-letter queue with an alarm **(tested)** | Bedrock quota increases for your expected volume (cross-region inference profiles also help); AWS Backup plans if you need backups outside the account |
 | **Performance efficiency** | Right-sized Fargate tasks that run only while an agent works; Arm Lambdas; reviewers run in parallel; CloudFront in front of the portal; cheaper models for review and checking, the strongest only for judgement-heavy roles | Measure real agent run times and adjust Fargate size and timeouts |
 | **Cost optimization** | Pay per use almost everywhere; spend caps per agent run and per case, plus a review round limit (see [Budgets and spend control](#budgets-and-spend-control)); optional AWS Budgets alerts **(tested)**; `Project` and `CostCentre` tags on every resource **(tested)**; log retention limits | Activate the cost allocation tags in the Billing console; consider Bedrock application inference profiles to see Claude spend for this workload alone |
 | **Sustainability** | Scales to zero between cases; waiting for people uses no compute; Arm (Graviton) Lambdas; logs expire | Move the runner to Arm once the Agent SDK's bundled Claude Code build for Arm is confirmed in this image |
@@ -390,6 +453,8 @@ so it has not been run yet.
 - [ ] AWS CLI v2, Node.js 18 or later, the CDK CLI (`npm install -g aws-cdk`), Python 3.11 or later.
 - [ ] **Docker running.** The deploy builds the runner image for `linux/amd64` (on Apple silicon
       this uses emulation: slower, but it works).
+- [ ] Access to PyPI from the deploy machine: the synth installs `pypdf` (pure Python) into the
+      ingest function's package, cached in `.build/`. Without it, CDK falls back to a Docker build.
 
 ### Ways to deploy
 
@@ -605,7 +670,8 @@ Most of the cost is Claude tokens, capped per run, per review loop and per case,
 monthly alert for the account (see [Budgets and spend control](#budgets-and-spend-control)).
 Everything else is pay per use, except the **interface VPC endpoints**: five endpoints in two
 availability zones are billed by the hour even when nothing runs. Cognito, CloudFront, API Gateway,
-Lambda, Step Functions, DynamoDB and the alarms cost little at this volume.
+Lambda, Step Functions, DynamoDB and the alarms cost little at this volume. GuardDuty Malware
+Protection for S3 is charged per GB scanned and per object; at tens of pages per case this is small.
 
 ### Troubleshooting
 
@@ -615,6 +681,8 @@ Lambda, Step Functions, DynamoDB and the alarms cost little at this volume.
 | Runner log shows `AccessDenied` or `ValidationException` from Bedrock | Claude not enabled in the account, or the model ID is not available in the region |
 | Runner hangs, then times out | It tried to reach a service without an endpoint (the runner has no internet). Add the interface endpoint for that service in `infra/pipeline_stack.py` |
 | Case stays on "Agents working" | Open the Step Functions execution named after the case; a failed agent run ends in the `Failed` state with the error |
+| An attachment upload fails in the browser | The portal is served from a custom domain: add it to the CORS rule on the case documents bucket in `infra/pipeline_stack.py` |
+| An attachment stays on "Uploading or scanning" | Check the GuardDuty Malware Protection plan's status (it needs its IAM role), the `IngestAttachment` function's logs and the `IngestDeadLetters` queue. A stage waits `wait_seconds` and then runs without it |
 | Sign-in loops back to the sign-in page | The browser blocks session storage, or the app client callback URL was changed by hand; it must be `PortalUrl` + `/` |
 
 ### What has been checked, and what only a real deploy can check
@@ -626,7 +694,11 @@ Checked in this repo:
   structural test confirms every state is reachable and every transition target exists.
 - The CI/CD deploy role template passes `cfn-lint`, and a test checks it trusts only this repository's
   `sandbox` environment and can do nothing but assume the CDK bootstrap roles.
-- Every Lambda handler imports with only Python and boto3, as in the Lambda runtime.
+- Every Lambda handler imports with only Python and boto3, as in the Lambda runtime; the ingest
+  function's package contains `pypdf` (a test opens the built asset).
+- Attachments end to end locally and in the browser: upload, text extraction (PDF, Word, HTML),
+  what agents receive, waiting for a scan, late files at a gate; and the AWS path with moto: upload
+  links, scan results (clean, malware, unscannable) and attachment ids under simultaneous uploads.
 - The runner package installs in a clean environment with the Claude Code CLI that the Agent SDK bundles.
 - The Well-Architected controls marked **(tested)** in the pillar table above, from outbound-only HTTPS
   and read-only roles to alarms, deletion protection, retries and cost tags.
@@ -640,7 +712,9 @@ Only a first deploy in the sandbox can confirm:
 - the Docker image build (no Docker daemon was available where this was written);
 - Claude access and the model IDs in your region;
 - the Claude Code CLI running inside Fargate with no internet route;
-- the Cognito sign-in round trip, SAML federation, Teams and Jira.
+- the Cognito sign-in round trip, SAML federation, Teams and Jira;
+- the GuardDuty plan's set-up and the exact scan-result event it sends (the rule and the ingest
+  function follow the documented event shape), and a browser upload through a signed link with CORS.
 
 ## API
 
@@ -651,8 +725,10 @@ needs the signed-in user's Cognito ID token in the `Authorization` header.
 | --- | --- | --- |
 | `GET /api/roles` | | Every role: description, model, budget per run, turn limit, tools, reads and writes, specialists, instructions; plus the case limits and house rules |
 | `GET /api/cases` | | Cases with progress, who they wait for and spend, plus counts |
-| `POST /api/cases` | `{"title", "request", "requester"}` | `{"case_id"}` |
-| `GET /api/cases/{id}` | | The case page: progress, questions, findings, activity, cost and spend by role |
+| `POST /api/cases` | `{"title", "request", "requester", "attachments": [{"name", "size"}]}` (attachments optional) | `{"case_id", "uploads"}`: one upload target per file. A case with files starts once they are in (locally) or waits for them (AWS) |
+| `GET /api/cases/{id}` | | The case page: progress, questions, findings, attachments, activity, cost and spend by role |
+| `GET /api/cases/{id}?doc=attachments/A1.md` | | An attachment's extracted text |
+| `POST /api/cases/{id}/attachments` | `{"files": [{"name", "size"}]}` | `{"uploads": [{"id", "url", "method", "headers"}]}`. Then `PUT` each file to its `url` with those headers: on AWS a 15-minute signed S3 link, locally `/api/cases/{id}/attachments/{A1}/content` |
 | `GET /api/cases/{id}?doc=04-design.md` | | One document |
 | `POST /api/cases/{id}/respond` | `{"answers"}`; or `{"outcome": "approve" \| "send_back" \| "reject", "comment"}` at a gate; or `{"outcome": "reopen", "comment"}` for a rejected case | `{"outcome"}` |
 
@@ -665,7 +741,7 @@ pip install -e ".[dev]" "moto[s3,dynamodb]" cfn-lint -r infra/requirements.txt
 pytest
 ```
 
-84 tests cover the catalogue, the roles summary, the envelope and backlog rules, the path guard, the review routing,
+103 tests cover the catalogue, the roles summary, attachments (checks, extraction, what agents get, scans), the envelope and backlog rules, the path guard, the review routing,
 full pipeline runs (blockers, review rounds, conflicts, escalation, rejection, reopening, budget stop, spend caps), the API
 views, the local portal server end to end, mock-by-default local runs, the state machine, the runner
 entrypoint, the Lambdas, the S3/DynamoDB store (with moto), the CDK stack (synth, `cfn-lint` and the Well-Architected controls), and the CI/CD deploy role and workflow.

@@ -43,10 +43,21 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class AttachmentLimits:
+    max_files: int = 20
+    max_file_mb: float = 20.0
+    max_image_mb: float = 3.75
+    max_total_mb: float = 100.0
+    types: tuple[str, ...] = ("pdf", "docx", "html", "htm", "md", "txt", "csv", "png", "jpg", "jpeg", "gif", "webp")
+    wait_seconds: int = 300
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     stages: tuple[Stage, ...]
     gates: dict[str, Gate] = field(default_factory=dict)
     limits: Limits = field(default_factory=Limits)
+    attachments: AttachmentLimits = field(default_factory=AttachmentLimits)
 
     def stage(self, stage_id: str) -> Stage:
         for s in self.stages:
@@ -124,7 +135,22 @@ def parse_pipeline(data: dict) -> PipelineConfig:
     )
     if limits.max_review_rounds < 1:
         raise ConfigError("max_review_rounds must be at least 1")
-    return PipelineConfig(stages=tuple(stages), gates=gates, limits=limits)
+
+    from .attachments import CONTENT_TYPES  # late import: attachments imports the store, not config
+    att = data.get("attachments") or {}
+    defaults = AttachmentLimits()
+    attachments = AttachmentLimits(
+        max_files=int(att.get("max_files", defaults.max_files)),
+        max_file_mb=float(att.get("max_file_mb", defaults.max_file_mb)),
+        max_image_mb=float(att.get("max_image_mb", defaults.max_image_mb)),
+        max_total_mb=float(att.get("max_total_mb", defaults.max_total_mb)),
+        types=tuple(str(t).lower().lstrip(".") for t in att.get("types", defaults.types)),
+        wait_seconds=int(att.get("wait_seconds", defaults.wait_seconds)),
+    )
+    unknown = [t for t in attachments.types if t not in CONTENT_TYPES]
+    if unknown:
+        raise ConfigError(f"attachments.types has types IDEA cannot read: {unknown}")
+    return PipelineConfig(stages=tuple(stages), gates=gates, limits=limits, attachments=attachments)
 
 
 GATE_LABELS = {"go_no_go": "Go/no-go"}
@@ -145,8 +171,12 @@ def pipeline_summary(cfg: PipelineConfig) -> dict:
             "kind": s.kind,
             "gate": {"id": gate.id, "label": gate_label(gate.id), "approver": gate.approver} if gate else None,
         })
+    a = cfg.attachments
     return {"stages": stages, "budget_usd": cfg.limits.case_budget_usd,
-            "max_review_rounds": cfg.limits.max_review_rounds}
+            "max_review_rounds": cfg.limits.max_review_rounds,
+            "attachments": {"max_files": a.max_files, "max_file_mb": a.max_file_mb,
+                            "max_image_mb": a.max_image_mb, "max_total_mb": a.max_total_mb,
+                            "types": list(a.types)}}
 
 
 def load_pipeline(path: Path) -> PipelineConfig:

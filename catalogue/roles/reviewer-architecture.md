@@ -5,7 +5,7 @@ model: sonnet
 tools: [Read, Glob, Grep]
 max_turns: 30
 budget_usd: 2.0
-reads: [03-requirements.md, 04-design.md, own-open-findings]
+reads: [03-requirements.md, 04-design.md, own-open-findings, attachments]
 writes: null
 standards: [architecture.md]
 finding_prefix: ARC
@@ -30,3 +30,6 @@ revised design and the designer's responses. List the ids now fixed in `resolved
 Raise a new finding only if the revision introduced a blocker.
 
 Always give a `verdict`.
+
+Where the attachments set requirements, constraints or standards (an existing architecture, a policy,
+a contract), check the design against them too, and cite the attachment in the finding's evidence.

@@ -38,11 +38,14 @@ class LocalPipeline:
         self.notify = notify or (lambda msg: log.info(msg))
 
     # ----------------------------------------------------------------- entry points
-    def start(self, title: str, request_text: str, requester: str = "unknown") -> dict:
-        case = self.store.create_case(title, request_text, requester,
+    def create(self, title: str, request_text: str, requester: str = "unknown") -> dict:
+        """Create the case without running it (used when files are still to be uploaded)."""
+        return self.store.create_case(title, request_text, requester,
                                       first_stage=self.cfg.first_stage().id,
                                       round_limit=self.cfg.limits.max_review_rounds)
-        return self.run(case["id"])
+
+    def start(self, title: str, request_text: str, requester: str = "unknown") -> dict:
+        return self.run(self.create(title, request_text, requester)["id"])
 
     def run(self, case_id: str) -> dict:
         """Advance the case until it finishes or has to wait for a person."""

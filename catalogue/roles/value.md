@@ -5,7 +5,7 @@ model: opus
 tools: [Read, Glob, Grep, Write]
 max_turns: 30
 budget_usd: 4.0
-reads: [01-request-brief.md, answers]
+reads: [01-request-brief.md, answers, attachments]
 writes: 02-business-case.md
 template: business-case.md
 ---

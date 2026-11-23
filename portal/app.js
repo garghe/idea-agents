@@ -309,6 +309,74 @@
     });
   }
 
+  // ------------------------------------------------------------------ attachments (drop zone + upload)
+  var picked = {};
+  function attLimits() { return (config.pipeline && config.pipeline.attachments) || { types: [], max_file_mb: 20, max_image_mb: 3.75, max_files: 20 }; }
+  var IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+  function extOf(name) { var m = /\.([^.]+)$/.exec(name); return m ? m[1].toLowerCase() : ''; }
+  function sizeText(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+  function dropZoneHtml(id, label) {
+    var L = attLimits();
+    picked[id] = [];
+    return '<div class="drop" id="drop-' + id + '"><div class="field" style="margin-bottom:4px">' + esc(label) + '</div>' +
+      '<input type="file" multiple id="file-' + id + '" class="sr-only" accept="' + esc(L.types.map(function (t) { return '.' + t; }).join(',')) + '">' +
+      '<label for="file-' + id + '" class="drop-target"><span><strong>Choose files</strong> or drop them here</span>' +
+      '<span class="muted small">PDF, Word, HTML, text and images. Up to ' + L.max_file_mb + ' MB each (images ' + L.max_image_mb + ' MB).</span></label>' +
+      '<ul class="file-list" id="list-' + id + '" aria-live="polite"></ul><div class="error small" id="ferr-' + id + '" role="alert"></div></div>';
+  }
+  function renderPicked(id) {
+    var list = document.getElementById('list-' + id);
+    list.innerHTML = picked[id].map(function (f, i) {
+      return '<li><span>' + esc(f.name) + ' <span class="muted small">' + sizeText(f.size) + '</span></span>' +
+        '<button type="button" class="link-btn" data-remove="' + i + '" aria-label="Remove ' + esc(f.name) + '">Remove</button></li>';
+    }).join('');
+    list.querySelectorAll('[data-remove]').forEach(function (b) {
+      b.addEventListener('click', function () { picked[id].splice(Number(b.getAttribute('data-remove')), 1); renderPicked(id); });
+    });
+  }
+  function addFiles(id, files) {
+    var L = attLimits();
+    var err = document.getElementById('ferr-' + id);
+    var problems = [];
+    Array.prototype.forEach.call(files, function (f) {
+      var ext = extOf(f.name);
+      var cap = (IMAGE_EXT.indexOf(ext) >= 0 ? L.max_image_mb : L.max_file_mb) * 1048576;
+      if (L.types.indexOf(ext) < 0) { problems.push(f.name + ': this type of file is not accepted'); return; }
+      if (f.size > cap) { problems.push(f.name + ': too large'); return; }
+      if (!f.size) { problems.push(f.name + ': the file is empty'); return; }
+      if (picked[id].length >= L.max_files) { problems.push('At most ' + L.max_files + ' files'); return; }
+      picked[id].push(f);
+    });
+    err.textContent = problems.join('. ');
+    renderPicked(id);
+  }
+  function bindDropZone(id) {
+    var input = document.getElementById('file-' + id);
+    var zone = document.getElementById('drop-' + id);
+    input.addEventListener('change', function () { addFiles(id, input.files); input.value = ''; });
+    zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.classList.add('over'); });
+    zone.addEventListener('dragleave', function () { zone.classList.remove('over'); });
+    zone.addEventListener('drop', function (e) { e.preventDefault(); zone.classList.remove('over'); addFiles(id, e.dataTransfer.files); });
+  }
+  function pickedMeta(id) { return (picked[id] || []).map(function (f) { return { name: f.name, size: f.size }; }); }
+  // Uploads go straight to storage: locally to this server, on AWS to S3 through a short-lived signed link.
+  async function uploadFiles(uploads, files, onProgress) {
+    for (var i = 0; i < uploads.length; i++) {
+      if (onProgress) { onProgress(i + 1, uploads.length); }
+      var u = uploads[i];
+      var resp = await fetch(u.url, { method: u.method || 'PUT', headers: u.headers || {}, body: files[i] });
+      if (!resp.ok) { throw new Error('Upload of ' + files[i].name + ' failed (' + resp.status + ')'); }
+    }
+  }
+  async function attachTo(caseId, id, onProgress) {
+    var files = picked[id] || [];
+    if (!files.length) { return 0; }
+    var res = await call('/cases/' + encodeURIComponent(caseId) + '/attachments', { method: 'POST', body: { files: pickedMeta(id), by: actingAs() } });
+    await uploadFiles(res.uploads, files, onProgress);
+    picked[id] = [];
+    return files.length;
+  }
+
   // ------------------------------------------------------------------ new request
   function newPage() {
     setNav('new');
@@ -323,8 +391,10 @@
       '<div><label class="field" for="requester">Requested by</label><input class="input" id="requester" maxlength="100" value="' + esc(isMock() ? actingAs() : '') + '"></div>' +
       '<div><label class="field" for="request">The request</label>' +
       '<textarea class="input" id="request" rows="12" required placeholder="What do you need, for whom, and by when? Include any constraints you know about."></textarea></div>' +
+      dropZoneHtml('new', 'Supporting documents (optional)') +
       '<div class="btn-row"><button class="btn primary" type="submit" id="submit">Start the pipeline</button><span class="error" id="form-error" role="alert"></span></div>' +
       '</form>';
+    bindDropZone('new');
     var fill = document.getElementById('fill-sample');
     if (fill) {
       fill.addEventListener('click', function () {
@@ -344,9 +414,14 @@
       btn.disabled = true;
       btn.textContent = 'Starting…';
       try {
+        var files = picked['new'].slice();
         var res = await call('/cases', { method: 'POST', body: {
-          title: title, request: request, requester: document.getElementById('requester').value.trim()
+          title: title, request: request, requester: document.getElementById('requester').value.trim(),
+          attachments: pickedMeta('new')
         } });
+        if (res.uploads && res.uploads.length) {
+          await uploadFiles(res.uploads, files, function (n, total) { btn.textContent = 'Uploading ' + n + ' of ' + total + '…'; });
+        }
         location.hash = '#/cases/' + res.case_id;
       } catch (ex) {
         err.textContent = ex.message;
@@ -409,6 +484,7 @@
             '<div class="why">Why it matters: ' + esc(q.why_it_matters) + '</div>' +
             '<textarea class="input" rows="2" id="q-' + esc(q.id) + '" data-qid="' + esc(q.id) + '"></textarea></div>';
         }).join('') +
+        dropZoneHtml('answers', 'Attach documents with your answers (optional)') +
         '<div class="btn-row"><button class="btn primary" type="submit" id="send-answers">Send answers</button>' +
         '<span class="muted small">The ' + esc(c.stage) + ' stage reruns with your answers.</span></div>' +
         '<div class="error" id="action-error" role="alert"></div></form>';
@@ -426,8 +502,10 @@
           (d.stage_summary ? '<div class="summary-box"><div style="font-weight:600;margin-bottom:4px">Latest agent summary</div>' + esc(d.stage_summary) +
             (c.stage === 'design' ? '<div class="small muted" style="margin-top:6px">' + open.length + ' open finding(s); ' +
               open.filter(function (f) { return f.severity !== 'minor'; }).length + ' blocker or major.</div>' : '') + '</div>' : '');
+      var unseen = (d.unseen_at_gate || []).length ? '<div class="notice" style="margin-top:12px">Attached after this stage ran, so its agents have not read: ' +
+        esc(d.unseen_at_gate.join(', ')) + '. Send it back if they should take it into account.</div>' : '';
       return '<section class="card action" aria-labelledby="decide-h"><h2 id="decide-h">' +
-        (esc8n ? 'Escalated design review' : 'Your decision: ' + esc(gateLabel)) + '</h2>' + body +
+        (esc8n ? 'Escalated design review' : 'Your decision: ' + esc(gateLabel)) + '</h2>' + body + unseen +
         '<label class="field" for="comment">Comment <span class="muted" style="font-weight:400">(required if you send it back)</span></label>' +
         '<textarea class="input" id="comment" rows="3" placeholder="What should change, and why?" style="margin-bottom:16px"></textarea>' +
         '<div class="btn-row"><button type="button" class="btn primary" data-outcome="approve">' + (esc8n ? 'Approve design' : 'Approve') + '</button>' +
@@ -474,7 +552,26 @@
         }).join('') + '</div>'
       : '<p class="muted" style="margin:0">No review findings yet. They appear when the design review starts.</p>';
     var pct = d.budget_usd ? Math.min(100, Math.round(100 * d.cost_usd / d.budget_usd)) : 0;
-    return '<section class="card" aria-labelledby="find-h"><h2 id="find-h">Review findings</h2>' + findings + '</section>' +
+    var atts = d.attachments || [];
+    var attCard = '<section class="card" aria-labelledby="att-h"><h2 id="att-h">Attachments</h2>' +
+      (atts.length ? '<ul class="att-list">' + atts.map(function (a) {
+        var title = esc(a.id) + ' · ' + esc(a.name);
+        var head = a.text_doc && a.status === 'ready' ? '<a href="#" data-att-doc="' + esc(a.text_doc) + '">' + title + '</a>' : '<span>' + title + '</span>';
+        var state = a.status === 'pending' ? '<span class="pill wait">' + (isMock() ? 'Uploading' : 'Uploading or scanning') + '</span>'
+          : a.status === 'rejected' ? '<span class="pill bad">Turned away</span>' : '';
+        var size = a.pages ? a.pages + (a.pages === 1 ? ' page' : ' pages') : sizeText(a.size || 0);
+        var seen = a.status !== 'ready' ? '' : (a.seen_by.length ? 'Read by ' + a.seen_by.join(', ') : 'Not read by an agent yet');
+        return '<li><div class="row">' + head + state + '</div>' +
+          '<div class="muted small">' + esc(a.type) + ', ' + esc(size) + ' · ' + esc(a.added_by || '') + ', during ' + esc(a.added_during || '') + '</div>' +
+          (a.status === 'rejected' ? '<div class="small" style="color:var(--bad)">' + esc(a.reason || '') + '</div>' : '') +
+          (seen ? '<div class="small">' + esc(seen) + '</div>' : '') +
+          (a.note ? '<div class="muted small">' + esc(a.note) + '</div>' : '') + '</li>';
+      }).join('') + '</ul>' : '<p class="muted" style="margin:0 0 12px">No files yet. Agents read and cite anything attached here.</p>') +
+      (d.can_attach ? dropZoneHtml('case', atts.length ? 'Add more files' : 'Add files') +
+        '<div class="btn-row" style="margin-top:8px"><button type="button" class="btn" id="attach-btn">Attach</button>' +
+        '<span class="muted small">' + (isMock() ? 'Not scanned locally.' : 'Scanned for malware first.') + ' Stages that run next will read them.</span></div>' : '') +
+      '</section>';
+    return attCard + '<section class="card" aria-labelledby="find-h"><h2 id="find-h">Review findings</h2>' + findings + '</section>' +
       '<section class="card" aria-labelledby="act-h"><h2 id="act-h">Activity</h2><ol class="activity">' +
       d.activity.slice(0, 14).map(function (a) {
         return '<li><time datetime="' + esc(a.at) + '">' + esc(fmtTime(a.at)) + '</time><span>' + esc(a.text) +
@@ -502,7 +599,9 @@
     body.innerHTML = '<p class="muted">Loading…</p>';
     try {
       var doc = await call('/cases/' + encodeURIComponent(caseId) + '?doc=' + encodeURIComponent(name));
-      var meta = '<div class="doc-meta"><span>' + esc(name) + '</span>' + (isMock() ? '<span class="tag-mock">Mock data</span>' : '') + '</div>';
+      var isAtt = /^attachments\//.test(name);
+      var meta = '<div class="doc-meta"><span>' + esc(isAtt ? 'Attachment, extracted text' : name) + '</span>' +
+        (isAtt ? '<span class="tag-file">Uploaded file</span>' : (isMock() ? '<span class="tag-mock">Mock data</span>' : '')) + '</div>';
       body.innerHTML = meta + (/\.json$/.test(name) ? backlogHtml(doc.content) : markdown(doc.content));
     } catch (e) {
       body.innerHTML = '<p class="error">' + esc(e.message) + '</p>';
@@ -538,6 +637,28 @@
 
     var err = document.getElementById('action-error');
     var form = document.getElementById('answer-form');
+    if (document.getElementById('drop-answers')) { bindDropZone('answers'); }
+    if (document.getElementById('drop-case')) {
+      bindDropZone('case');
+      document.getElementById('attach-btn').addEventListener('click', async function () {
+        var b = this;
+        var ferr = document.getElementById('ferr-case');
+        if (!picked['case'].length) { ferr.textContent = 'Choose files first.'; return; }
+        b.disabled = true;
+        try {
+          var n = await attachTo(caseId, 'case', function (i, total) { b.textContent = 'Uploading ' + i + ' of ' + total + '…'; });
+          toast(n === 1 ? 'File attached.' : n + ' files attached.');
+          casePage(caseId, initial);
+        } catch (ex) {
+          ferr.textContent = ex.message;
+          b.disabled = false;
+          b.textContent = 'Attach';
+        }
+      });
+    }
+    app.querySelectorAll('[data-att-doc]').forEach(function (a) {
+      a.addEventListener('click', function (e) { e.preventDefault(); loadDoc(caseId, a.getAttribute('data-att-doc')); });
+    });
     if (form) {
       form.addEventListener('submit', async function (e) {
         e.preventDefault();
@@ -545,12 +666,14 @@
         form.querySelectorAll('textarea[data-qid]').forEach(function (t) {
           if (t.value.trim()) { parts.push(t.getAttribute('data-qid') + ': ' + t.value.trim()); }
         });
-        if (!parts.length) { err.textContent = 'Answer at least one question first.'; return; }
+        if (!parts.length && !picked['answers'].length) { err.textContent = 'Answer at least one question, or attach a document, first.'; return; }
+        if (!parts.length) { parts.push('See the attached documents.'); }
         err.textContent = '';
         var btn = document.getElementById('send-answers');
         btn.disabled = true;
         btn.textContent = 'Sending…';
         try {
+          await attachTo(caseId, 'answers', function (n, total) { btn.textContent = 'Uploading ' + n + ' of ' + total + '…'; });
           await call('/cases/' + encodeURIComponent(caseId) + '/respond', { method: 'POST', body: { answers: parts.join('\n\n'), by: actingAs() } });
           toast('Answers sent. The agents are carrying on.');
           casePage(caseId);
@@ -599,7 +722,7 @@
       });
     }
     refreshWaitingCount();
-    if (c.status === 'running' || c.status === 'new') {
+    if (c.status === 'running' || c.status === 'new' || d.attachments_pending) {
       pollTimer = setTimeout(function () {
         if (location.hash === '#/cases/' + caseId) { casePage(caseId, initial).catch(showError); }
       }, 5000);

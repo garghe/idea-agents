@@ -36,6 +36,29 @@ REQUESTS = {
 }
 
 
+EXAMPLES = REPO / "examples" / "attachments"
+
+
+def put(base: str, url: str, data: bytes) -> dict:
+    req = urllib.request.Request(base + url, method="PUT", data=data,
+                                 headers={"Content-Type": "application/octet-stream"})
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
+def attach(base: str, case_id: str | None, files: list[Path], start: dict | None = None) -> str:
+    """Attach example files: to a new case (start = the case fields) or to an existing one."""
+    meta = [{"name": f.name, "size": f.stat().st_size} for f in files]
+    if start is not None:
+        res = call(base, "/api/cases", {**start, "attachments": meta})
+        case_id = res["case_id"]
+    else:
+        res = call(base, f"/api/cases/{case_id}/attachments", {"files": meta, "by": "Lead architect"})
+    for up, f in zip(res["uploads"], files):
+        put(base, up["url"], f.read_bytes())
+    return case_id
+
+
 def call(base: str, path: str, body: dict | None = None) -> dict:
     req = urllib.request.Request(base + path, method="POST" if body is not None else "GET",
                                  data=json.dumps(body).encode() if body is not None else None,
@@ -47,7 +70,11 @@ def call(base: str, path: str, body: dict | None = None) -> dict:
 def seed(base: str) -> dict[str, str]:
     ids = {}
     for key, (title, requester, text) in REQUESTS.items():
-        ids[key] = call(base, "/api/cases", {"title": title, "request": text, "requester": requester})["case_id"]
+        fields = {"title": title, "request": text, "requester": requester}
+        if key == "clips":  # started with two supporting documents
+            ids[key] = attach(base, None, [EXAMPLES / "current-clip-workflow.html"], start=fields)
+        else:
+            ids[key] = call(base, "/api/cases", fields)["case_id"]
         time.sleep(0.05)
     # Released: answer, then approve the three gates.
     call(base, f"/api/cases/{ids['ads']}/respond", {"answers": "Q-1: All FAST channels in the UK.", "by": "Head of Ad Ops"})
@@ -61,6 +88,8 @@ def seed(base: str) -> dict[str, str]:
     call(base, f"/api/cases/{ids['clips']}/respond", {"answers": "Q-1: Premier League and Champions League only.",
                                                        "by": "Head of Digital Sport"})
     call(base, f"/api/cases/{ids['clips']}/respond", {"outcome": "approve", "by": "Product owner"})
+    # A file arrives after the design ran: the sign-off panel flags it.
+    attach(base, ids["clips"], [EXAMPLES / "rights-summary.md"])
     # "news" stays waiting for answers at intake.
     return ids
 
@@ -84,12 +113,16 @@ def main() -> int:
             page = browser.new_page(viewport={"width": 1440, "height": 900}, device_scale_factor=1)
             page.route("**/fonts.googleapis.com/**", lambda route: route.abort())
 
-            def shot(url: str, name: str, ready: str, click: str | None = None, full: bool = True) -> None:
+            def shot(url: str, name: str, ready: str, click: str | None = None, full: bool = True,
+                     files: list[Path] | None = None) -> None:
                 page.goto(base + url)
                 page.wait_for_selector(ready)
                 if click:
                     page.click(click)
                     page.wait_for_timeout(300)
+                if files:
+                    page.set_input_files("#file-new", [str(f) for f in files])
+                    page.wait_for_timeout(200)
                 page.wait_for_timeout(300)
                 page.evaluate("window.scrollTo(0, 0)")
                 page.screenshot(path=str(out / name), full_page=full)
@@ -100,7 +133,8 @@ def main() -> int:
             shot(f"/#/cases/{ids['news']}", "case-questions.png", "#answer-form")
             shot(f"/#/cases/{ids['ads']}", "case-backlog.png", ".tab", click='.tab[data-doc="05-backlog.json"]')
             shot(f"/#/cases/{ids['rail']}", "case-rejected.png", "#reopen-h")
-            shot("/#/new", "new-request.png", "#new-form", click="#fill-sample")
+            shot("/#/new", "new-request.png", "#new-form", click="#fill-sample",
+                 files=sorted(EXAMPLES.iterdir()))
             shot("/#/roles", "roles.png", ".role-card", full=False)
             browser.close()
         server.shutdown()

@@ -5,7 +5,7 @@ model: opus
 tools: [Read, Glob, Grep, Write]
 max_turns: 60
 budget_usd: 8.0
-reads: [03-requirements.md, 02-business-case.md, 04-design.md, open-findings, answers]
+reads: [03-requirements.md, 02-business-case.md, 04-design.md, open-findings, answers, attachments]
 writes: 04-design.md
 template: design.md
 standards: [architecture.md, security.md, operability.md]

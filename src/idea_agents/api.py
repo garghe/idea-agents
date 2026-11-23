@@ -7,6 +7,7 @@ summary from `idea_agents.config.pipeline_summary`, passed in as a plain dict.
 
 from __future__ import annotations
 
+from .attachments import PENDING, READY, TYPE_LABELS
 from .store import (DONE, FAILED, NEW, REJECTED, RUNNING, WAITING_ANSWERS, WAITING_ESCALATION,
                     WAITING_GATE, CaseStore)
 
@@ -138,9 +139,16 @@ def list_view(store: CaseStore, summary: dict) -> dict:
     }
 
 
-def activity(runs: list[dict], decisions: list[dict], blockers: list[dict]) -> list[dict]:
+def activity(runs: list[dict], decisions: list[dict], blockers: list[dict],
+             attachments: list[dict] = ()) -> list[dict]:
     """Newest first. Entries in the same second keep their real order (runs, answers, decisions)."""
     items = []
+    for a in attachments:
+        items.append({"at": a["added_at"], "text": f"{a.get('added_by', 'Someone')} attached {a['id']} {a['name']}",
+                      "kind": "person"})
+        if a.get("status") == "rejected":
+            items.append({"at": a.get("rejected_at") or a["added_at"],
+                          "text": f"{a['id']} {a['name']} was turned away: {a.get('reason')}", "kind": "agent"})
     for r in runs:
         if r.get("status") == "invalid":
             text = f"{ROLE_LABELS.get(r.get('role'), r.get('role'))}: output rejected by checks, retrying"
@@ -191,6 +199,36 @@ def spend_by_role(runs: list[dict]) -> list[dict]:
     return [out[k] for k in order]
 
 
+def attachment_rows(attachments: list[dict], runs: list[dict], summary: dict) -> list[dict]:
+    """Each attachment with the stage it arrived in and the agents that have read it."""
+    labels = {s["id"]: s["label"] for s in summary["stages"]}
+    out = []
+    for a in attachments:
+        seen = []
+        for r in runs:
+            if a["id"] in (r.get("attachments_seen") or []):
+                label = ROLE_LABELS.get(r.get("role"), r.get("role"))
+                if label not in seen:
+                    seen.append(label)
+        out.append({
+            "id": a["id"], "name": a["name"], "kind": a.get("kind"), "type": TYPE_LABELS.get(a.get("ext"), a.get("ext")),
+            "size": a.get("size"), "status": a["status"], "reason": a.get("reason"), "note": a.get("note") or "",
+            "pages": a.get("pages"), "text_doc": a.get("text_doc"), "scan": a.get("scan"),
+            "added_by": a.get("added_by"), "added_at": a.get("added_at"),
+            "added_during": labels.get(a.get("stage_at_upload"), a.get("stage_at_upload")),
+            "seen_by": seen,
+        })
+    return out
+
+
+def unseen_at_gate(case: dict, attachments: list[dict], runs: list[dict]) -> list[str]:
+    """Ready files that no run of the stage now waiting for a decision has read."""
+    if case["status"] not in (WAITING_GATE, WAITING_ESCALATION):
+        return []
+    seen = {i for r in runs if r.get("stage") == case["stage"] for i in (r.get("attachments_seen") or [])}
+    return [f"{a['id']} {a['name']}" for a in attachments if a["status"] == READY and a["id"] not in seen]
+
+
 def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
     case = store.get_case(case_id)
     runs = store.list_runs(case_id)
@@ -198,6 +236,7 @@ def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
     blockers = store.list_blockers(case_id)
     open_questions = [b for b in blockers if b["status"] == "open"]
     findings = store.list_findings(case_id)
+    attachments = store.list_attachments(case_id)
     order = {"open": 0, "closed": 1, "duplicate": 2}
     findings.sort(key=lambda f: (order.get(f["status"], 3), {"blocker": 0, "major": 1, "minor": 2}.get(f["severity"], 3), f["id"]))
     stage_runs = [r for r in runs if r.get("stage") == case["stage"] and r.get("status") != "invalid"]
@@ -209,8 +248,12 @@ def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
         "open_questions": open_questions,
         "findings": findings,
         "decisions": decisions,
-        "documents": [d for d in store.list_docs(case_id)],
-        "activity": activity(runs, decisions, blockers),
+        "documents": [d for d in store.list_docs(case_id) if not d.startswith("attachments/")],
+        "attachments": attachment_rows(attachments, runs, summary),
+        "attachments_pending": sum(a["status"] == PENDING for a in attachments),
+        "can_attach": case["status"] != DONE,
+        "unseen_at_gate": unseen_at_gate(case, attachments, runs),
+        "activity": activity(runs, decisions, blockers, attachments),
         "stage_summary": (chair[-1] if chair else stage_runs[-1]).get("summary") if stage_runs else None,
         "cost_usd": round(sum(r.get("cost_usd") or 0.0 for r in runs), 2),
         "budget_usd": summary.get("budget_usd"),

@@ -5,7 +5,7 @@ model: sonnet
 tools: [Read, Glob, Grep, Write]
 max_turns: 40
 budget_usd: 3.0
-reads: [03-requirements.md, 04-design.md, answers]
+reads: [03-requirements.md, 04-design.md, answers, attachments]
 writes: 05-backlog.json
 ---
 

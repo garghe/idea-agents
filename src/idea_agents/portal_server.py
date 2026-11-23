@@ -6,10 +6,15 @@ and the page says so in a banner. The API it serves has the same routes and shap
   GET  /config.json                        mode, pipeline stages, sample request
   GET  /api/roles                          the agent roles: description, model, budget, limits
   GET  /api/cases                          list of cases with counts
-  POST /api/cases                          start a case {title, request, requester}
+  POST /api/cases                          start a case {title, request, requester, attachments?}
   GET  /api/cases/<id>                     case detail
   GET  /api/cases/<id>?doc=<name>          one document
   POST /api/cases/<id>/respond             {answers} or {outcome, comment}
+  POST /api/cases/<id>/attachments         {files: [{name, size}]}: returns where to upload each
+  PUT  /api/cases/<id>/attachments/<A1>/content   the file itself (on AWS: a signed S3 link instead)
+
+A new case with files starts once they have all arrived. Locally files are not scanned for
+malware (on AWS GuardDuty scans each one before it is used).
 """
 
 from __future__ import annotations
@@ -24,16 +29,18 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import api
+from . import attachments as att_mod
 from .catalogue import Catalogue
 from .config import pipeline_summary
 from .fake import ScriptedAgentClient
 from .local_pipeline import LocalPipeline
 from .roles import roles_summary
 from .runner import StageRunner
-from .store import REJECTED, WAITING_ANSWERS, LocalCaseStore
+from .store import NEW, REJECTED, WAITING_ANSWERS, LocalCaseStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CASE_PATH = re.compile(r"^/api/cases/([A-Za-z0-9-]+)(/respond)?$")
+CASE_PATH = re.compile(r"^/api/cases/([A-Za-z0-9-]+)(/respond|/attachments)?$")
+UPLOAD_PATH = re.compile(r"^/api/cases/([A-Za-z0-9-]+)/attachments/(A\d+)/content$")
 MAX_BODY = 200_000
 
 
@@ -74,10 +81,57 @@ class PortalApp:
         problem = api.check_new_case(data)
         if problem:
             return 400, {"error": problem}
+        title, text = data["title"].strip()[:200], data["request"].strip()
+        requester = (data.get("requester") or "Local user").strip()[:100]
+        files = data.get("attachments") or []
         with self.lock:
-            case = self.pipeline.start(data["title"].strip()[:200], data["request"].strip(),
-                                       (data.get("requester") or "Local user").strip()[:100])
-        return 201, {"case_id": case["id"], "status": case["status"]}
+            if not files:
+                case = self.pipeline.start(title, text, requester)
+                return 201, {"case_id": case["id"], "status": case["status"], "uploads": []}
+            pseudo = {"status": NEW, "stage": self.catalogue.pipeline.first_stage().id}
+            problem = att_mod.check_new_files(pseudo, [], files, self.summary["attachments"])
+            if problem:
+                return 400, {"error": problem}
+            case = self.pipeline.create(title, text, requester)  # starts once the files are in
+            uploads = self._uploads(case, att_mod.plan_uploads(self.store, case, files, requester))
+        return 201, {"case_id": case["id"], "status": case["status"], "uploads": uploads}
+
+    @staticmethod
+    def _uploads(case: dict, atts: list[dict]) -> list[dict]:
+        return [{"id": a["id"], "name": a["name"], "method": "PUT",
+                 "url": f"/api/cases/{case['id']}/attachments/{a['id']}/content",
+                 "headers": {"Content-Type": a["content_type"]}} for a in atts]
+
+    def add_attachments(self, case_id: str, data: dict):
+        with self.lock:
+            try:
+                case = self.store.get_case(case_id)
+            except KeyError:
+                return 404, {"error": f"no such case: {case_id}"}
+            files = data.get("files")
+            problem = att_mod.check_new_files(case, self.store.list_attachments(case_id), files,
+                                              self.summary["attachments"])
+            if problem:
+                return 400, {"error": problem}
+            by = (data.get("by") or "Local user").strip()[:100]
+            return 201, {"uploads": self._uploads(case, att_mod.plan_uploads(self.store, case, files, by))}
+
+    def upload(self, case_id: str, att_id: str, data: bytes):
+        """Store and ingest one file (no malware scan locally). A new case starts when its last file is in."""
+        with self.lock:
+            try:
+                case = self.store.get_case(case_id)
+                att = self.store.get_attachment(case_id, att_id)
+            except KeyError as exc:
+                return 404, {"error": str(exc).strip("'")}
+            if att["status"] != att_mod.PENDING:
+                return 409, {"error": f"{att_id} has already been uploaded"}
+            self.store.put_attachment_bytes(case_id, att, data)
+            att = att_mod.ingest(self.store, case_id, att_id, data, scan="not_scanned (local)")
+            if case["status"] == NEW and not any(a["status"] == att_mod.PENDING
+                                                 for a in self.store.list_attachments(case_id)):
+                self.pipeline.run(case_id)
+        return 200, {"id": att["id"], "status": att["status"], "reason": att.get("reason")}
 
     def get_case(self, case_id: str, doc: str | None):
         try:
@@ -163,9 +217,21 @@ def make_handler(app: PortalApp):
             if url.path == "/api/cases":
                 return self._send(*app.create_case(data))
             m = CASE_PATH.match(url.path)
-            if m and m.group(2):
+            if m and m.group(2) == "/respond":
                 return self._send(*app.respond(m.group(1), data))
+            if m and m.group(2) == "/attachments":
+                return self._send(*app.add_attachments(m.group(1), data))
             return self._send(404, {"error": "not found"})
+
+        def do_PUT(self):
+            m = UPLOAD_PATH.match(urlparse(self.path).path)
+            if not m:
+                return self._send(404, {"error": "not found"})
+            length = int(self.headers.get("Content-Length") or 0)
+            cap = int(app.summary["attachments"]["max_file_mb"] * 1024 * 1024)
+            if length <= 0 or length > cap:
+                return self._send(413, {"error": "the file is empty or too large"})
+            return self._send(*app.upload(m.group(1), m.group(2), self.rfile.read(length)))
 
         def _static(self, path: str):
             rel = "index.html" if path in ("", "/") else path.lstrip("/")

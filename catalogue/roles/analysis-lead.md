@@ -5,7 +5,7 @@ model: opus
 tools: [Read, Glob, Grep, Write, Agent]
 max_turns: 60
 budget_usd: 8.0
-reads: [01-request-brief.md, 02-business-case.md, answers]
+reads: [01-request-brief.md, 02-business-case.md, answers, attachments]
 writes: 03-requirements.md
 template: requirements.md
 specialists: [data, security, operations, commercial]

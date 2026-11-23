@@ -38,9 +38,42 @@ class ScriptedAgentClient:
                            session_id=f"mock-{role.name}", model="mock")
 
     # ------------------------------------------------------------- helpers
-    @staticmethod
-    def _write(ws: Path, name: str, text: str) -> None:
+    @classmethod
+    def _write(cls, ws: Path, name: str, text: str) -> None:
+        if name.endswith(".md"):
+            text += cls._sources(ws)
         (ws / "output" / name).write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def _attachments(ws: Path) -> list[tuple[str, str, str]]:
+        """(id, file name, first line of text) for each attachment the runner gave this agent."""
+        index = ws / "inputs" / "attachments" / "index.md"
+        if not index.exists():
+            return []
+        out = []
+        for line in index.read_text(encoding="utf-8").splitlines():
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if len(cells) >= 6 and re.fullmatch(r"A\d+", cells[0]):
+                first = ""
+                text_file = ws / "inputs" / "attachments" / f"{cells[0]}.md"
+                if text_file.exists():
+                    body = text_file.read_text(encoding="utf-8").split("\n", 3)[-1]
+                    first = next((ln.strip("# ").strip() for ln in body.splitlines()
+                                  if ln.strip() and not ln.startswith(("## Page", ">", "(", "|"))), "")
+                out.append((cells[0], cells[1], first[:120]))
+        return out
+
+    @classmethod
+    def _sources(cls, ws: Path) -> str:
+        atts = cls._attachments(ws)
+        if not atts:
+            return ""
+        lines = ["", "## Sources (mock)", ""]
+        for aid, name, first in atts:
+            page = " p.1" if name.lower().endswith(".pdf") else ""
+            what = f'opens with "{first}"' if first else "an image, opened directly"
+            lines.append(f"- [{aid}{page}] {name}: {what}. Used as background for this document.")
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _has_answers(ws: Path) -> bool:
@@ -225,9 +258,10 @@ queue. A rights check blocks anything that may not be published.
     def _reviewer_security(self, ws: Path) -> dict:
         finding = None
         if self.security_finding:
+            atts = self._attachments(ws)
             finding = {"severity": "major", "section": "Approval queue",
                        "issue": "The approval screen has no single sign-on.",
-                       "evidence": "SEC-STD-01, NFR-3",
+                       "evidence": "SEC-STD-01, NFR-3" + (f", [{atts[0][0]}]" if atts else ""),
                        "suggested_fix": "Put the approval screen behind corporate single sign-on."}
         return self._reviewer(ws, finding)
 
