@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  IAM role that GitHub Actions assumes through OpenID Connect (no stored AWS keys) to deploy the
+  agent pipeline with CDK. The role can only assume the CDK bootstrap roles, which do the actual work.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: garghe
+    Description: GitHub user or organisation that owns the repository.
+  RepositoryName:
+    Type: String
+    Default: multi-agent-cloud
+  GitHubEnvironment:
+    Type: String
+    Default: sandbox
+    Description: Only workflow jobs running in this GitHub environment can assume the role.
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Set to false if this AWS account already has the GitHub OIDC identity provider.
+  CdkQualifier:
+    Type: String
+    Default: hnb659fds
+    Description: The CDK bootstrap qualifier (the default unless you bootstrapped with a custom one).
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: agent-pipeline-github-deploy
+      Description: Assumed by GitHub Actions to deploy the agent pipeline with CDK
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${RepositoryName}:environment:${GitHubEnvironment}
+      Policies:
+        - PolicyName: assume-cdk-bootstrap-roles
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-${CdkQualifier}-*
+
+Outputs:
+  DeployRoleArn:
+    Description: Put this in the GitHub environment variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn

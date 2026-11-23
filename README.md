@@ -64,10 +64,11 @@ the review findings and the activity log.
 | `src/agentpipe/aws/` | The AWS side: S3/DynamoDB case store, the ECS runner entrypoint, the Lambdas and the Step Functions generator. |
 | `portal/` | The web portal: plain HTML, CSS and JavaScript, no build step. The same files run locally and on AWS. |
 | `statemachine/pipeline.asl.json` | The generated state machine, for reading and review (a test keeps it in sync). |
-| `infra/` | CDK app that deploys everything to AWS. |
+| `infra/` | CDK app that deploys everything to AWS, and `github-deploy-role.yaml`, the CloudFormation template for the CI/CD deploy role. |
+| `.github/workflows/` | `tests.yml` runs the tests on every push; `deploy.yml` deploys to AWS after an approval. |
 | `scripts/take_screenshots.py` | Seeds mock cases and captures the portal screenshots above. |
 | `examples/requests/` | A sample business request. |
-| `tests/` | 63 tests; no Claude or AWS calls needed. |
+| `tests/` | 66 tests; no Claude or AWS calls needed. |
 
 ## Run it locally (mock data, no LLM calls)
 
@@ -197,7 +198,21 @@ flowchart LR
 - [ ] **Docker running.** The deploy builds the runner image for `linux/amd64` (on Apple silicon
       this uses emulation: slower, but it works).
 
-### Step by step
+### Ways to deploy
+
+The stack is written with the AWS CDK, which **generates a CloudFormation template and deploys it as a
+CloudFormation stack** named `AgentPipeline`. You can see and audit everything in the CloudFormation
+console like any other stack. There are three ways to run the deployment:
+
+| Option | Best for | How |
+| --- | --- | --- |
+| [A. From your machine](#option-a-deploy-from-your-machine) | First deploy, experiments | `cdk deploy` from a laptop |
+| [B. CloudFormation change set](#option-b-review-a-cloudformation-change-set-first) | Changes someone must review before they happen | `cdk deploy --method=prepare-change-set`, review in the CloudFormation console, then execute |
+| [C. CI/CD pipeline](#option-c-cicd-with-github-actions) | Repeatable, approved deploys with no AWS keys on laptops | The `deploy` GitHub Actions workflow, using OIDC and a GitHub environment approval |
+
+All three need the one-time CDK bootstrap (step 2 below) and the checklist above.
+
+### Option A: deploy from your machine
 
 1. **Install the CDK app's dependencies**
 
@@ -269,9 +284,120 @@ flowchart LR
    under the `runner` stream prefix. Expect the intake agent to ask a question within a few minutes;
    answer it in the portal and carry on through the gates.
 
+### Option B: review a CloudFormation change set first
+
+Use this when a change to the sandbox (or later, production) must be reviewed before it is applied.
+
+1. **See the generated CloudFormation template** (optional, no AWS changes):
+
+   ```bash
+   cd infra
+   cdk synth -c account=<ACCOUNT_ID> -c region=eu-west-2 > AgentPipeline.template.yaml
+   ```
+
+   The template is what CloudFormation will run. It refers to assets (the runner image, the Lambda
+   code and the portal files) that `cdk deploy` uploads to the CDK bootstrap bucket and ECR repository,
+   which is why the next step uses `cdk deploy` rather than uploading the template by hand.
+
+2. **Create a change set without applying it:**
+
+   ```bash
+   cdk deploy -c account=<ACCOUNT_ID> -c region=eu-west-2 \
+     -c opusModel=<Opus model ID> -c sonnetModel=<Sonnet model ID> \
+     --method=prepare-change-set --change-set-name agent-pipeline-release
+   ```
+
+   This uploads the assets and creates the change set **agent-pipeline-release** on the
+   `AgentPipeline` stack. Nothing is changed yet. For a first deploy, the stack shows as
+   `REVIEW_IN_PROGRESS` until the change set is executed.
+
+3. **Review it**: CloudFormation console, stack `AgentPipeline`, **Change sets** tab. It lists every
+   resource that will be added, changed or replaced, including IAM changes.
+
+4. **Apply it**, either with **Execute change set** in the console, or:
+
+   ```bash
+   cdk deploy -c account=<ACCOUNT_ID> -c region=eu-west-2 \
+     -c opusModel=<Opus model ID> -c sonnetModel=<Sonnet model ID> \
+     --method=execute-change-set --change-set-name agent-pipeline-release
+   ```
+
+   (`execute-change-set` needs a recent CDK CLI; on an older one, use the console or
+   `aws cloudformation execute-change-set --stack-name AgentPipeline --change-set-name agent-pipeline-release`.)
+
+Then carry on from step 4 of option A (users, SSO, secrets, smoke test).
+
+### Option C: CI/CD with GitHub Actions
+
+The repo includes `.github/workflows/deploy.yml`. Each run tests the code, waits for an approver,
+then deploys from GitHub to AWS. GitHub signs in to AWS with **OpenID Connect**, so no AWS keys are
+stored anywhere.
+
+```mermaid
+flowchart LR
+    D[Run the deploy workflow<br/>pick a method] --> T[Tests]
+    T --> A{Approval in the<br/>sandbox environment}
+    A --> O[Sign in to AWS<br/>with GitHub OIDC]
+    O --> C[cdk deploy]
+    C --> P[prepare-change-set:<br/>review in CloudFormation]
+    C --> X[change-set or execute-change-set:<br/>stack updated]
+```
+
+**One-time setup**
+
+1. **Bootstrap CDK** in the account (option A, step 2). This needs an administrator once; after that
+   the pipeline only uses the roles bootstrap created.
+
+2. **Create the deploy role** from the CloudFormation template in this repo. It trusts only workflow
+   jobs from this repository running in the `sandbox` GitHub environment, and it can do nothing
+   except assume the CDK bootstrap roles:
+
+   ```bash
+   aws cloudformation deploy --stack-name agent-pipeline-github-deploy \
+     --template-file infra/github-deploy-role.yaml --capabilities CAPABILITY_NAMED_IAM \
+     --region eu-west-2 \
+     --parameter-overrides GitHubOwner=garghe RepositoryName=multi-agent-cloud GitHubEnvironment=sandbox
+   aws cloudformation describe-stacks --stack-name agent-pipeline-github-deploy --region eu-west-2 \
+     --query "Stacks[0].Outputs[?OutputKey=='DeployRoleArn'].OutputValue" --output text
+   ```
+
+   If the account already has the GitHub OIDC identity provider, add `CreateOidcProvider=false`.
+
+3. **Create the GitHub environment**: repository Settings, Environments, **New environment** named
+   `sandbox`. Under **Required reviewers** add the people who approve deploys.
+
+4. **Add environment variables** to `sandbox` (Settings, Environments, sandbox, Environment variables).
+   None of these are secrets:
+
+   | Variable | Value |
+   | --- | --- |
+   | `AWS_DEPLOY_ROLE_ARN` | The `DeployRoleArn` output from step 2 |
+   | `AWS_ACCOUNT_ID` | The AWS account ID |
+   | `AWS_REGION` | `eu-west-2` |
+   | `OPUS_MODEL`, `SONNET_MODEL` | The Bedrock model or inference profile IDs |
+   | `HAIKU_MODEL`, `AUTH_DOMAIN_PREFIX`, `SAML_METADATA_URL` | Optional, as in option A |
+
+**Each deploy**
+
+1. Actions tab, **deploy**, **Run workflow**, choose a method:
+   - `prepare-change-set` (default): creates the change set for review, changes nothing.
+   - `execute-change-set`: applies the change set from the previous prepare run.
+   - `change-set`: creates and applies in one go.
+2. The tests run, then the deploy job waits for a required reviewer to approve.
+3. After approval it deploys. The run summary shows the stack outputs, or where to review the
+   change set.
+
+The first run still needs steps 4 to 7 of option A afterwards (users, SSO, secrets, smoke test).
+
+**Other CI/CD tools.** The same pattern works elsewhere: AWS CodePipeline (for example with CDK
+Pipelines), GitLab CI or Azure DevOps. Run the tests, then `cdk deploy` with the same `-c` values and
+`--method`, from a role that can only assume the CDK bootstrap roles, signed in with the tool's own
+OIDC support rather than stored keys.
+
 ### Update and remove
 
-- **Update** after changing code, prompts or `pipeline.yaml`: run the same `cdk deploy` command.
+- **Update** after changing code, prompts or `pipeline.yaml`: run the same `cdk deploy` command, or the
+  deploy workflow.
   Prompts and standards are baked into the runner image, so every catalogue change is a deploy.
 - **Remove**: `cdk destroy`. The case documents bucket, the records table and the user pool are kept
   on purpose, so no case history is lost; delete them by hand if you really want them gone.
@@ -300,6 +426,8 @@ Checked in this repo:
 - The stack synthesises, and `cfn-lint` finds no errors in the CloudFormation template (a test runs it).
 - The generated state machine passes `cfn-lint`'s Step Functions schema checks (a test runs it), and a
   structural test confirms every state is reachable and every transition target exists.
+- The CI/CD deploy role template passes `cfn-lint`, and a test checks it trusts only this repository's
+  `sandbox` environment and can do nothing but assume the CDK bootstrap roles.
 - Every Lambda handler imports with only Python and boto3, as in the Lambda runtime.
 - The runner package installs in a clean environment with the Claude Code CLI that the Agent SDK bundles.
 - Design checks, each covered by a test or visible in the stack: no NAT or internet gateway, every
@@ -336,10 +464,10 @@ pip install -e ".[dev]" "moto[s3,dynamodb]" cfn-lint -r infra/requirements.txt
 pytest
 ```
 
-63 tests cover the catalogue, the envelope and backlog rules, the path guard, the review routing,
+66 tests cover the catalogue, the envelope and backlog rules, the path guard, the review routing,
 full pipeline runs (blockers, review rounds, conflicts, escalation, rejection, budget stop), the API
 views, the local portal server end to end, mock-by-default local runs, the state machine, the runner
-entrypoint, the Lambdas, the S3/DynamoDB store (with moto), and the CDK stack (synth plus `cfn-lint`).
+entrypoint, the Lambdas, the S3/DynamoDB store (with moto), the CDK stack (synth plus `cfn-lint`), and the CI/CD deploy role and workflow.
 Tests that need moto, CDK or `cfn-lint` skip when those are not installed.
 
 ## Status and next steps

@@ -96,3 +96,41 @@ def test_state_machine_passes_cfn_lint_schema(tmp_path):
     path.write_text(json.dumps(template))
     result = subprocess.run(["cfn-lint", "--format", "parseable", str(path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.skipif(not shutil.which("cfn-lint"), reason="cfn-lint not installed")
+def test_github_deploy_role_template_passes_cfn_lint():
+    result = subprocess.run(["cfn-lint", "--format", "parseable", str(REPO / "infra" / "github-deploy-role.yaml")],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout
+
+
+def test_github_deploy_role_is_narrow():
+    import yaml
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    for tag in ("!Ref", "!Sub", "!If", "!Equals", "!GetAtt"):
+        Loader.add_constructor(tag, lambda loader, node: loader.construct_sequence(node)
+                               if isinstance(node, yaml.SequenceNode) else loader.construct_scalar(node))
+    t = yaml.load((REPO / "infra" / "github-deploy-role.yaml").read_text(), Loader=Loader)
+    role = t["Resources"]["DeployRole"]["Properties"]
+    cond = role["AssumeRolePolicyDocument"]["Statement"][0]["Condition"]["StringEquals"]
+    assert cond["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
+    assert ":environment:" in cond["token.actions.githubusercontent.com:sub"]  # only the approved environment
+    statements = role["Policies"][0]["PolicyDocument"]["Statement"]
+    assert [s["Action"] for s in statements] == ["sts:AssumeRole"]  # nothing but the CDK bootstrap roles
+    assert "role/cdk-" in statements[0]["Resource"]
+
+
+def test_deploy_workflow_is_gated_and_keyless():
+    import yaml
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / "deploy.yml").read_text())
+    assert wf["permissions"]["id-token"] == "write"
+    deploy = wf["jobs"]["deploy"]
+    assert deploy["needs"] == "test" and deploy["environment"] == "sandbox"
+    text = (REPO / ".github" / "workflows" / "deploy.yml").read_text()
+    assert "aws-access-key-id" not in text and "secrets.AWS" not in text
+    options = wf[True]["workflow_dispatch"]["inputs"]["method"]["options"]  # YAML reads "on" as True
+    assert options == ["prepare-change-set", "execute-change-set", "change-set"]

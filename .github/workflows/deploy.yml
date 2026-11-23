@@ -1,0 +1,94 @@
+name: deploy
+
+# Run by hand from the Actions tab. Tests run first; the deploy job runs in the "sandbox" GitHub
+# environment, so it waits for the environment's required reviewers before touching AWS.
+on:
+  workflow_dispatch:
+    inputs:
+      method:
+        description: >-
+          prepare-change-set: only create a CloudFormation change set to review.
+          execute-change-set: apply the change set created by an earlier prepare run.
+          change-set: create and apply in one go.
+        type: choice
+        options: [prepare-change-set, execute-change-set, change-set]
+        default: prepare-change-set
+
+permissions:
+  contents: read
+  id-token: write # lets the job sign in to AWS with GitHub's OIDC token, no stored keys
+
+concurrency:
+  group: deploy-sandbox
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: pip install -e ".[dev]" "moto[s3,dynamodb]" cfn-lint -r infra/requirements.txt
+      - name: Test
+        run: pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: sandbox
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install CDK
+        run: |
+          pip install -r infra/requirements.txt
+          npm install -g aws-cdk
+      - name: Sign in to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Deploy
+        working-directory: infra
+        env:
+          METHOD: ${{ inputs.method }}
+          ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          REGION: ${{ vars.AWS_REGION }}
+          OPUS_MODEL: ${{ vars.OPUS_MODEL }}
+          SONNET_MODEL: ${{ vars.SONNET_MODEL }}
+          HAIKU_MODEL: ${{ vars.HAIKU_MODEL }}
+          AUTH_DOMAIN_PREFIX: ${{ vars.AUTH_DOMAIN_PREFIX }}
+          SAML_METADATA_URL: ${{ vars.SAML_METADATA_URL }}
+        run: |
+          args=(-c account="$ACCOUNT_ID" -c region="$REGION" -c opusModel="$OPUS_MODEL" -c sonnetModel="$SONNET_MODEL")
+          if [ -n "$HAIKU_MODEL" ]; then args+=(-c haikuModel="$HAIKU_MODEL"); fi
+          if [ -n "$AUTH_DOMAIN_PREFIX" ]; then args+=(-c authDomainPrefix="$AUTH_DOMAIN_PREFIX"); fi
+          if [ -n "$SAML_METADATA_URL" ]; then args+=(-c samlMetadataUrl="$SAML_METADATA_URL"); fi
+          cdk deploy AgentPipeline "${args[@]}" \
+            --method="$METHOD" --change-set-name agent-pipeline-release \
+            --require-approval never --outputs-file outputs.json
+      - name: Summary
+        if: always()
+        working-directory: infra
+        env:
+          METHOD: ${{ inputs.method }}
+        run: |
+          {
+            echo "### Deploy: $METHOD"
+            if [ "$METHOD" = "prepare-change-set" ]; then
+              echo "Change set **agent-pipeline-release** is ready to review in the CloudFormation console (stack AgentPipeline)."
+              echo "Run this workflow again with **execute-change-set** to apply it."
+            fi
+            if [ -s outputs.json ]; then echo '```json'; cat outputs.json; echo '```'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
