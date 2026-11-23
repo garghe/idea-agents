@@ -12,7 +12,7 @@ from conftest import REPO
 
 def test_agent_sdk_options_are_locked_down(catalogue, tmp_path):
     pytest.importorskip("claude_agent_sdk")
-    from agentpipe.agent_client import ClaudeAgentClient
+    from idea_agents.agent_client import ClaudeAgentClient
 
     ws = tmp_path / "ws"
     (ws / "output").mkdir(parents=True)
@@ -39,7 +39,7 @@ def synth(tmp_path_factory):
     cdk = pytest.importorskip("aws_cdk")
     import sys
     sys.path.insert(0, str(REPO / "infra"))
-    from agentpipe.catalogue import Catalogue
+    from idea_agents.catalogue import Catalogue
     from pipeline_stack import PipelineStack
 
     out = tmp_path_factory.mktemp("cdk")
@@ -65,7 +65,7 @@ def test_stack_shape(synth):
     assert not resources(synth, "AWS::EC2::InternetGateway")
     task = resources(synth, "AWS::ECS::TaskDefinition")[0]
     env = {e["Name"]: e.get("Value") for e in task["Properties"]["ContainerDefinitions"][0]["Environment"]}
-    assert env["AGENTPIPE_USE_BEDROCK"] == "1" and env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "eu.anthropic.example"
+    assert env["IDEA_USE_BEDROCK"] == "1" and env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "eu.anthropic.example"
 
 
 def test_every_api_method_needs_sign_in(synth):
@@ -188,7 +188,7 @@ def test_operations_controls(synth):
     subscription = resources(synth, "AWS::SNS::Subscription")[0]["Properties"]
     assert subscription["Protocol"] == "email" and subscription["Endpoint"] == "ops@example.com"
     for f in resources(synth, "AWS::Lambda::Function"):
-        if f["Properties"].get("Handler", "").startswith("agentpipe."):
+        if f["Properties"].get("Handler", "").startswith("idea_agents."):
             assert f["Properties"]["TracingConfig"]["Mode"] == "Active"
             assert f["Properties"]["Architectures"] == ["arm64"]
 
@@ -199,4 +199,4 @@ def test_cost_controls(synth):
     kinds = sorted(n["Notification"]["NotificationType"] for n in budget["NotificationsWithSubscribers"])
     assert kinds == ["ACTUAL", "FORECASTED"]
     tagged = resources(synth, "AWS::DynamoDB::Table")[0]["Properties"]["Tags"]
-    assert {"Key": "Project", "Value": "agent-pipeline"} in tagged and {"Key": "CostCentre", "Value": "ARCH"} in tagged
+    assert {"Key": "Project", "Value": "idea-agents"} in tagged and {"Key": "CostCentre", "Value": "ARCH"} in tagged

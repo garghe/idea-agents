@@ -68,7 +68,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def default_catalogue_dir() -> Path:
-    env = os.environ.get("AGENTPIPE_CATALOGUE")
+    env = os.environ.get("IDEA_CATALOGUE")
     if env:
         return Path(env)
     return Path(__file__).resolve().parents[2] / "catalogue"

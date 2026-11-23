@@ -1,7 +1,7 @@
 """Running one agent with the Claude Agent SDK.
 
 `AgentClient` is the small interface the runner depends on, so tests and the demo can swap in
-`agentpipe.fake.ScriptedAgentClient` without calling Claude.
+`idea_agents.fake.ScriptedAgentClient` without calling Claude.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ class ClaudeAgentClient:
 
     def __init__(self, use_bedrock: bool | None = None):
         if use_bedrock is None:
-            use_bedrock = os.environ.get("AGENTPIPE_USE_BEDROCK") == "1"
+            use_bedrock = os.environ.get("IDEA_USE_BEDROCK") == "1"
         self.use_bedrock = use_bedrock
 
     def run(self, role, system_prompt, task, workspace, schema, resume=None, budget_usd=None) -> AgentResult:

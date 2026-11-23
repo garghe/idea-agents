@@ -1,9 +1,9 @@
-# multi-agent-cloud
+# IDEA: Intake, Design & Evaluation Agents
 
-A multi-agent pipeline that takes a business request ("we need to deliver this new product")
-through clarification, value, analysis and a reviewed design, and ends with a backlog of stories
-for delivery teams or build agents. It is the front half of an AI-assisted SDLC, with a web portal
-where people answer the agents' questions and make the decisions.
+**IDEA takes a business request from idea to approved backlog.** Claude agents take the request
+("we need to deliver this new product") through clarification, value, analysis and a reviewed design,
+and end with a backlog of stories for delivery teams or build agents. It is the front half of an
+AI-assisted SDLC, with a web portal where people answer the agents' questions and make the decisions.
 
 Code owns the flow (stage order, gates, loop limits). Claude agents own the thinking inside each
 stage. Agents hand over through documents in a case file, never through chat history, and people
@@ -64,8 +64,8 @@ the review findings and the activity log.
 | Path | What it is |
 | --- | --- |
 | `catalogue/` | Everything that shapes the agents' work: role prompts, tool lists, models, output schemas, templates, standards, and `pipeline.yaml` (stages, gates, limits). Tune here; no code change needed. |
-| `src/agentpipe/` | The Python package: stage runner, review rules, case store, local pipeline, CLI, the shared API views and the local portal server. |
-| `src/agentpipe/aws/` | The AWS side: S3/DynamoDB case store, the ECS runner entrypoint, the Lambdas and the Step Functions generator. |
+| `src/idea_agents/` | The Python package: stage runner, review rules, case store, local pipeline, CLI, the shared API views and the local portal server. |
+| `src/idea_agents/aws/` | The AWS side: S3/DynamoDB case store, the ECS runner entrypoint, the Lambdas and the Step Functions generator. |
 | `portal/` | The web portal: plain HTML, CSS and JavaScript, no build step. The same files run locally and on AWS. |
 | `statemachine/pipeline.asl.json` | The generated state machine, for reading and review (a test keeps it in sync). |
 | `infra/` | CDK app that deploys everything to AWS, and `github-deploy-role.yaml`, the CloudFormation template for the CI/CD deploy role. |
@@ -82,7 +82,7 @@ Needs Python 3.11 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-agentpipe portal          # then open http://127.0.0.1:8080
+idea-agents portal          # then open http://127.0.0.1:8080
 ```
 
 **Locally, nothing calls an LLM.** The portal and the CLI use scripted agents that write mock
@@ -98,13 +98,13 @@ right to record who is deciding.
 The same flow from the command line:
 
 ```bash
-agentpipe new examples/requests/highlights-clips.md
-agentpipe answer <case-id> --text "Premier League and Champions League only" --by requester
-agentpipe decide <case-id> approve --by "Product owner"    # scope check
-agentpipe decide <case-id> approve --by "Lead architect"   # design sign-off
-agentpipe decide <case-id> approve --by "Product owner"    # backlog release
-agentpipe status <case-id>
-agentpipe reopen <case-id> --comment "Budget now agreed" --by Sponsor   # only for a rejected case
+idea-agents new examples/requests/highlights-clips.md
+idea-agents answer <case-id> --text "Premier League and Champions League only" --by requester
+idea-agents decide <case-id> approve --by "Product owner"    # scope check
+idea-agents decide <case-id> approve --by "Lead architect"   # design sign-off
+idea-agents decide <case-id> approve --by "Product owner"    # backlog release
+idea-agents status <case-id>
+idea-agents reopen <case-id> --comment "Budget now agreed" --by Sponsor   # only for a rejected case
 ```
 
 Cases live in `./cases/<case-id>/`: documents in `docs/`, earlier versions in `history/`, and every
@@ -112,7 +112,7 @@ run, finding, question and decision in `records.json`.
 
 **To tune the prompts against real Claude**, the CLI (not the portal) accepts an explicit `--live`
 flag. It then uses an Anthropic API key (`ANTHROPIC_API_KEY`) or Bedrock
-(`AGENTPIPE_USE_BEDROCK=1`, `AWS_REGION`, AWS credentials). Without `--live`, no LLM client is
+(`IDEA_USE_BEDROCK=1`, `AWS_REGION`, AWS credentials). Without `--live`, no LLM client is
 even created; a test checks this.
 
 ## How a stage runs
@@ -130,7 +130,7 @@ even created; a test checks this.
 
 The design review: the designer writes, three reviewers check in parallel, each from one angle and
 blind to the others' findings, and the chair merges duplicates and flags conflicts. Then **code**,
-not an agent, decides the route (`src/agentpipe/review.py`):
+not an agent, decides the route (`src/idea_agents/review.py`):
 
 | Situation | Route |
 | --- | --- |
@@ -141,7 +141,7 @@ not an agent, decides the route (`src/agentpipe/review.py`):
 
 ### Reopening a rejected case
 
-A rejected case can be reopened from its page in the portal (or with `agentpipe reopen`). Reopening:
+A rejected case can be reopened from its page in the portal (or with `idea-agents reopen`). Reopening:
 
 1. needs a comment saying what has changed since the rejection;
 2. sends the case back to **the stage where it was rejected**, in a new round, with the comment saved
@@ -173,7 +173,7 @@ reviewers cite them as evidence, so the review is only as good as they are.
 After changing `pipeline.yaml`, regenerate the state machine file and redeploy:
 
 ```bash
-python -m agentpipe.aws.asl > statemachine/pipeline.asl.json
+python -m idea_agents.aws.asl > statemachine/pipeline.asl.json
 ```
 
 ## Budgets and spend control
@@ -383,7 +383,7 @@ so it has not been run yet.
 ### Ways to deploy
 
 The stack is written with the AWS CDK, which **generates a CloudFormation template and deploys it as a
-CloudFormation stack** named `AgentPipeline`. You can see and audit everything in the CloudFormation
+CloudFormation stack** named `IdeaAgents`. You can see and audit everything in the CloudFormation
 console like any other stack. There are three ways to run the deployment:
 
 | Option | Best for | How |
@@ -425,12 +425,12 @@ All three need the one-time CDK bootstrap (step 2 below) and the checklist above
 
    | Context | Use |
    | --- | --- |
-   | `authDomainPrefix` | Prefix of the sign-in page address (default `agent-pipeline-<account id>`) |
+   | `authDomainPrefix` | Prefix of the sign-in page address (default `idea-<account id>`) |
    | `samlMetadataUrl`, `samlProviderName` | Sign in with your corporate identity provider (step 5) |
    | `haikuModel` | Model ID for Claude Code's small background tasks |
    | `alarmEmail` | Email address for alarms and budget alerts (confirm the subscription email AWS sends) |
    | `monthlyBudgetUsd` | Creates an AWS Budgets monthly limit with alerts at 80% actual and 100% forecast (see [Budgets and spend control](#budgets-and-spend-control)) |
-   | `costCentre` | Adds a `CostCentre` tag to every resource, next to the `Project=agent-pipeline` tag |
+   | `costCentre` | Adds a `CostCentre` tag to every resource, next to the `Project=idea-agents` tag |
 
    The first deploy takes a while, mostly building the image and creating CloudFront. When it
    finishes, note the outputs: `PortalUrl`, `UserPoolId`, `SignInDomain`, `StateMachineArn`,
@@ -477,7 +477,7 @@ Use this when a change to the sandbox (or later, production) must be reviewed be
 
    ```bash
    cd infra
-   cdk synth -c account=<ACCOUNT_ID> -c region=eu-west-2 > AgentPipeline.template.yaml
+   cdk synth -c account=<ACCOUNT_ID> -c region=eu-west-2 > IdeaAgents.template.yaml
    ```
 
    The template is what CloudFormation will run. It refers to assets (the runner image, the Lambda
@@ -489,14 +489,14 @@ Use this when a change to the sandbox (or later, production) must be reviewed be
    ```bash
    cdk deploy -c account=<ACCOUNT_ID> -c region=eu-west-2 \
      -c opusModel=<Opus model ID> -c sonnetModel=<Sonnet model ID> \
-     --method=prepare-change-set --change-set-name agent-pipeline-release
+     --method=prepare-change-set --change-set-name idea-release
    ```
 
-   This uploads the assets and creates the change set **agent-pipeline-release** on the
-   `AgentPipeline` stack. Nothing is changed yet. For a first deploy, the stack shows as
+   This uploads the assets and creates the change set **idea-release** on the
+   `IdeaAgents` stack. Nothing is changed yet. For a first deploy, the stack shows as
    `REVIEW_IN_PROGRESS` until the change set is executed.
 
-3. **Review it**: CloudFormation console, stack `AgentPipeline`, **Change sets** tab. It lists every
+3. **Review it**: CloudFormation console, stack `IdeaAgents`, **Change sets** tab. It lists every
    resource that will be added, changed or replaced, including IAM changes.
 
 4. **Apply it**, either with **Execute change set** in the console, or:
@@ -504,11 +504,11 @@ Use this when a change to the sandbox (or later, production) must be reviewed be
    ```bash
    cdk deploy -c account=<ACCOUNT_ID> -c region=eu-west-2 \
      -c opusModel=<Opus model ID> -c sonnetModel=<Sonnet model ID> \
-     --method=execute-change-set --change-set-name agent-pipeline-release
+     --method=execute-change-set --change-set-name idea-release
    ```
 
    (`execute-change-set` needs a recent CDK CLI; on an older one, use the console or
-   `aws cloudformation execute-change-set --stack-name AgentPipeline --change-set-name agent-pipeline-release`.)
+   `aws cloudformation execute-change-set --stack-name IdeaAgents --change-set-name idea-release`.)
 
 Then carry on from step 4 of option A (users, SSO, secrets, smoke test).
 
@@ -538,11 +538,11 @@ flowchart LR
    except assume the CDK bootstrap roles:
 
    ```bash
-   aws cloudformation deploy --stack-name agent-pipeline-github-deploy \
+   aws cloudformation deploy --stack-name idea-github-deploy \
      --template-file infra/github-deploy-role.yaml --capabilities CAPABILITY_NAMED_IAM \
      --region eu-west-2 \
-     --parameter-overrides GitHubOwner=garghe RepositoryName=multi-agent-cloud GitHubEnvironment=sandbox
-   aws cloudformation describe-stacks --stack-name agent-pipeline-github-deploy --region eu-west-2 \
+     --parameter-overrides GitHubOwner=garghe RepositoryName=idea-agents GitHubEnvironment=sandbox
+   aws cloudformation describe-stacks --stack-name idea-github-deploy --region eu-west-2 \
      --query "Stacks[0].Outputs[?OutputKey=='DeployRoleArn'].OutputValue" --output text
    ```
 
@@ -633,7 +633,7 @@ Only a first deploy in the sandbox can confirm:
 
 ## API
 
-The portal uses this API; it is the same locally (`agentpipe portal`) and on AWS, where each call
+The portal uses this API; it is the same locally (`idea-agents portal`) and on AWS, where each call
 needs the signed-in user's Cognito ID token in the `Authorization` header.
 
 | Method and path | Body | Returns |

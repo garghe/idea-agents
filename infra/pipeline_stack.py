@@ -43,12 +43,12 @@ from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_stepfunctions as sfn
 from constructs import Construct
 
-from agentpipe.aws.asl import Refs, build_definition
-from agentpipe.config import PipelineConfig, pipeline_summary
+from idea_agents.aws.asl import Refs, build_definition
+from idea_agents.config import PipelineConfig, pipeline_summary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTAINER_NAME = "runner"
-PORTAL_URL_PARAMETER = "/agent-pipeline/portal-url"
+PORTAL_URL_PARAMETER = "/idea/portal-url"
 LOG_RETENTION = logs.RetentionDays.SIX_MONTHS
 
 
@@ -62,12 +62,12 @@ class PipelineStack(Stack):
         summary = pipeline_summary(pipeline)
 
         # ---------------------------------------------------------------- tags (cost allocation)
-        Tags.of(self).add("Project", "agent-pipeline")
+        Tags.of(self).add("Project", "idea-agents")
         if cost_centre:
             Tags.of(self).add("CostCentre", cost_centre)
 
         # ---------------------------------------------------------------- alerts
-        alerts = sns.Topic(self, "Alerts", display_name="Agent pipeline alerts", enforce_ssl=True)
+        alerts = sns.Topic(self, "Alerts", display_name="IDEA alerts", enforce_ssl=True)
         alerts.add_to_resource_policy(iam.PolicyStatement(
             principals=[iam.ServicePrincipal("budgets.amazonaws.com")],
             actions=["SNS:Publish"], resources=[alerts.topic_arn]))
@@ -156,7 +156,7 @@ class PipelineStack(Stack):
         runner_env = {
             "CASES_BUCKET": bucket.bucket_name,
             "CASES_TABLE": table.table_name,
-            "AGENTPIPE_USE_BEDROCK": "1",
+            "IDEA_USE_BEDROCK": "1",
             "AWS_REGION": self.region,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_AUTOUPDATER": "1",
@@ -200,7 +200,7 @@ class PipelineStack(Stack):
                writes: bool = True) -> lambda_.Function:
             f = lambda_.Function(
                 self, name, runtime=lambda_.Runtime.PYTHON_3_12, architecture=lambda_.Architecture.ARM_64,
-                code=code, handler=f"agentpipe.aws.lambdas.{module}.handler",
+                code=code, handler=f"idea_agents.aws.lambdas.{module}.handler",
                 environment={**common_env, **(extra_env or {})},
                 timeout=Duration.seconds(timeout), memory_size=256, tracing=lambda_.Tracing.ACTIVE,
                 log_group=logs.LogGroup(self, f"{name}Logs", retention=LOG_RETENTION),
@@ -304,7 +304,7 @@ class PipelineStack(Stack):
         domain = user_pool.add_domain(
             "Domain",
             cognito_domain=cognito.CognitoDomainOptions(
-                domain_prefix=auth_domain_prefix or f"agent-pipeline-{self.account}"),
+                domain_prefix=auth_domain_prefix or f"idea-{self.account}"),
             managed_login_version=cognito.ManagedLoginVersion.CLASSIC_HOSTED_UI,  # works without branding setup
         )
 
@@ -312,7 +312,7 @@ class PipelineStack(Stack):
         authorizer = apigw.CognitoUserPoolsAuthorizer(self, "Authorizer", cognito_user_pools=[user_pool])
         api_access_logs = logs.LogGroup(self, "ApiAccessLogs", retention=LOG_RETENTION)
         rest_api = apigw.RestApi(
-            self, "Api", rest_api_name="agent-pipeline", cloud_watch_role=True,
+            self, "Api", rest_api_name="idea-agents", cloud_watch_role=True,
             default_method_options=apigw.MethodOptions(
                 authorization_type=apigw.AuthorizationType.COGNITO, authorizer=authorizer),
             deploy_options=apigw.StageOptions(
@@ -397,7 +397,7 @@ class PipelineStack(Stack):
             budgets.CfnBudget(
                 self, "MonthlyBudget",
                 budget=budgets.CfnBudget.BudgetDataProperty(
-                    budget_name=f"agent-pipeline-{self.stack_name}-monthly",
+                    budget_name=f"idea-{self.stack_name}-monthly",
                     budget_type="COST", time_unit="MONTHLY",
                     budget_limit=budgets.CfnBudget.SpendProperty(amount=monthly_budget_usd, unit="USD")),
                 notifications_with_subscribers=[

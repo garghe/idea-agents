@@ -1,7 +1,7 @@
 """The case file: documents plus records (case status, agent runs, findings, blockers, decisions).
 
 `CaseStore` is the interface. `LocalCaseStore` keeps everything in a folder per case, for the
-prototype. `agentpipe.aws.store.AwsCaseStore` keeps documents in S3 and records in DynamoDB.
+prototype. `idea_agents.aws.store.AwsCaseStore` keeps documents in S3 and records in DynamoDB.
 """
 
 from __future__ import annotations

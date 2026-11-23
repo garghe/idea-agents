@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from agentpipe.catalogue import Catalogue
-from agentpipe.fake import ScriptedAgentClient
-from agentpipe.local_pipeline import LocalPipeline
-from agentpipe.runner import StageRunner
-from agentpipe.store import LocalCaseStore
+from idea_agents.catalogue import Catalogue
+from idea_agents.fake import ScriptedAgentClient
+from idea_agents.local_pipeline import LocalPipeline
+from idea_agents.runner import StageRunner
+from idea_agents.store import LocalCaseStore
 
 REPO = Path(__file__).resolve().parents[1]
 REQUEST = (REPO / "examples" / "requests" / "highlights-clips.md").read_text(encoding="utf-8")

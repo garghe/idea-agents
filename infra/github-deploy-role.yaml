@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   IAM role that GitHub Actions assumes through OpenID Connect (no stored AWS keys) to deploy the
-  agent pipeline with CDK. The role can only assume the CDK bootstrap roles, which do the actual work.
+  IDEA (Intake, Design & Evaluation Agents) with CDK. The role can only assume the CDK bootstrap roles, which do the actual work.
 
 Parameters:
   GitHubOwner:
@@ -10,7 +10,7 @@ Parameters:
     Description: GitHub user or organisation that owns the repository.
   RepositoryName:
     Type: String
-    Default: multi-agent-cloud
+    Default: idea-agents
   GitHubEnvironment:
     Type: String
     Default: sandbox
@@ -43,8 +43,8 @@ Resources:
   DeployRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: agent-pipeline-github-deploy
-      Description: Assumed by GitHub Actions to deploy the agent pipeline with CDK
+      RoleName: idea-github-deploy
+      Description: Assumed by GitHub Actions to deploy IDEA with CDK
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: "2012-10-17"

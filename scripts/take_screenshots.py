@@ -20,7 +20,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from agentpipe.portal_server import make_server  # noqa: E402
+from idea_agents.portal_server import make_server  # noqa: E402
 
 REQUESTS = {
     "ads": ("Ad break markers for FAST channels", "Head of Ad Ops",

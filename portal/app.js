@@ -1,4 +1,4 @@
-/* Agent pipeline portal. Plain JavaScript, no build step.
+/* IDEA portal (Intake, Design & Evaluation Agents). Plain JavaScript, no build step.
  *
  * Reads config.json at start:
  *   local:  {"mode": "mock", "apiBase": "/api", "pipeline": {...}, "sampleRequest": {...}}
@@ -58,7 +58,7 @@
       'new': 'work', done: 'done', rejected: 'bad', failed: 'bad' }[status] || 'grey';
     return '<span class="pill ' + cls + '">' + esc(text) + '</span>';
   }
-  function actingAs() { return getItem('localStorage', 'agentpipe.name') || 'Local user'; }
+  function actingAs() { return getItem('localStorage', 'idea.name') || 'Local user'; }
 
   // ------------------------------------------------------------------ auth (AWS only)
   function b64url(bytes) {
@@ -78,7 +78,7 @@
     } catch (e) { return null; }
   }
   function currentToken() {
-    var token = getItem('sessionStorage', 'agentpipe.idToken');
+    var token = getItem('sessionStorage', 'idea.idToken');
     var claims = token && jwtClaims(token);
     if (!claims || claims.exp * 1000 < Date.now() + 60000) { return null; }
     return token;
@@ -87,9 +87,9 @@
     var a = config.auth;
     var verifier = randomString(48);
     var st = randomString(16);
-    setItem('sessionStorage', 'agentpipe.pkce', verifier);
-    setItem('sessionStorage', 'agentpipe.state', st);
-    setItem('sessionStorage', 'agentpipe.returnTo', location.hash || '#/cases');
+    setItem('sessionStorage', 'idea.pkce', verifier);
+    setItem('sessionStorage', 'idea.state', st);
+    setItem('sessionStorage', 'idea.returnTo', location.hash || '#/cases');
     var digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
     var challenge = b64url(new Uint8Array(digest));
     location.assign(a.baseUrl + '/oauth2/authorize?response_type=code&client_id=' + encodeURIComponent(a.clientId) +
@@ -100,27 +100,27 @@
     var params = new URLSearchParams(location.search);
     var code = params.get('code');
     if (!code) { return false; }
-    if (params.get('state') !== getItem('sessionStorage', 'agentpipe.state')) {
+    if (params.get('state') !== getItem('sessionStorage', 'idea.state')) {
       throw new Error('Sign-in failed: state mismatch. Please try again.');
     }
     var a = config.auth;
     var body = new URLSearchParams({
       grant_type: 'authorization_code', client_id: a.clientId, code: code, redirect_uri: a.redirectUri,
-      code_verifier: getItem('sessionStorage', 'agentpipe.pkce') || ''
+      code_verifier: getItem('sessionStorage', 'idea.pkce') || ''
     });
     var resp = await fetch(a.baseUrl + '/oauth2/token', {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body
     });
     if (!resp.ok) { throw new Error('Sign-in failed (' + resp.status + '). Please try again.'); }
     var tokens = await resp.json();
-    setItem('sessionStorage', 'agentpipe.idToken', tokens.id_token);
-    setItem('sessionStorage', 'agentpipe.pkce', null);
-    var returnTo = getItem('sessionStorage', 'agentpipe.returnTo') || '#/cases';
+    setItem('sessionStorage', 'idea.idToken', tokens.id_token);
+    setItem('sessionStorage', 'idea.pkce', null);
+    var returnTo = getItem('sessionStorage', 'idea.returnTo') || '#/cases';
     history.replaceState(null, '', location.pathname + returnTo);
     return true;
   }
   function logout() {
-    setItem('sessionStorage', 'agentpipe.idToken', null);
+    setItem('sessionStorage', 'idea.idToken', null);
     var a = config.auth;
     location.assign(a.baseUrl + '/logout?client_id=' + encodeURIComponent(a.clientId) +
       '&logout_uri=' + encodeURIComponent(a.redirectUri));
@@ -234,7 +234,7 @@
       area.innerHTML = '<div class="acting-as"><label for="acting-as" class="small">Acting as</label>' +
         '<input id="acting-as" value="' + esc(actingAs()) + '" autocomplete="off"></div>';
       document.getElementById('acting-as').addEventListener('change', function (e) {
-        setItem('localStorage', 'agentpipe.name', e.target.value.trim() || 'Local user');
+        setItem('localStorage', 'idea.name', e.target.value.trim() || 'Local user');
       });
       return;
     }
@@ -277,7 +277,7 @@
     var rows = data.cases.filter(filter.test);
     var c = data.counts;
     app.innerHTML =
-      '<div class="page-head"><div><h1>Cases</h1><div class="muted">Business requests moving through the agent pipeline</div></div>' +
+      '<div class="page-head"><div><h1>Cases</h1><div class="muted">Business requests moving through intake, design and evaluation</div></div>' +
       '<a class="btn primary" href="#/new" style="text-decoration:none;display:inline-flex;align-items:center">New request</a></div>' +
       '<div class="kpis">' +
       '<div class="kpi strong"><div class="muted small">Waiting for people</div><div class="n">' + c.waiting + '</div></div>' +

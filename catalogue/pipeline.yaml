@@ -1,6 +1,6 @@
 # Pipeline definition: the stage order, gates and limits.
 # The local prototype runs this file directly; the AWS state machine is generated from it
-# (see src/agentpipe/aws/asl.py), so both always follow the same flow.
+# (see src/idea_agents/aws/asl.py), so both always follow the same flow.
 
 stages:
   - id: intake

@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from agentpipe import review
-from agentpipe.agent_client import check_path, parse_envelope_text
-from agentpipe.schemas import backlog_errors, envelope_errors
+from idea_agents import review
+from idea_agents.agent_client import check_path, parse_envelope_text
+from idea_agents.schemas import backlog_errors, envelope_errors
 
 
 # ------------------------------------------------------------------ review routing

@@ -1,4 +1,4 @@
-"""The portal, run locally: `agentpipe portal` serves it on http://127.0.0.1:8080.
+"""The portal, run locally: `idea-agents portal` serves it on http://127.0.0.1:8080.
 
 Locally the portal always uses the scripted agents: every document is mock data, no LLM is called,
 and the page says so in a banner. The API it serves has the same routes and shapes as the AWS API:
@@ -109,7 +109,7 @@ class PortalApp:
 
 def make_handler(app: PortalApp):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "agentpipe-portal"
+        server_version = "idea_agents-portal"
 
         def log_message(self, fmt, *args):  # quieter console
             pass

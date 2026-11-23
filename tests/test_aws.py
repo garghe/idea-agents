@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from agentpipe.aws.asl import build_definition
-from agentpipe.fake import ScriptedAgentClient
-from agentpipe.store import LocalCaseStore
+from idea_agents.aws.asl import build_definition
+from idea_agents.fake import ScriptedAgentClient
+from idea_agents.store import LocalCaseStore
 
 
 # ------------------------------------------------------------------ state machine
@@ -101,8 +101,8 @@ class FakeSfn:
 
 
 def test_task_entry_reports_success(tmp_path, monkeypatch, catalogue):
-    from agentpipe.aws import task_entry
-    monkeypatch.setenv("AGENTPIPE_CATALOGUE", str(catalogue.root))
+    from idea_agents.aws import task_entry
+    monkeypatch.setenv("IDEA_CATALOGUE", str(catalogue.root))
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
     store = LocalCaseStore(tmp_path / "cases")
     case = store.create_case("t", "request")
@@ -116,8 +116,8 @@ def test_task_entry_reports_success(tmp_path, monkeypatch, catalogue):
 
 
 def test_task_entry_reports_failure(tmp_path, monkeypatch, catalogue):
-    from agentpipe.aws import task_entry
-    monkeypatch.setenv("AGENTPIPE_CATALOGUE", str(catalogue.root))
+    from idea_agents.aws import task_entry
+    monkeypatch.setenv("IDEA_CATALOGUE", str(catalogue.root))
     store = LocalCaseStore(tmp_path / "cases")
     sfn = FakeSfn()
     env = {"TASK_TOKEN": "tok", "CASE_ID": "C-missing", "STAGE": "intake", "ROLE": "intake"}
@@ -126,8 +126,8 @@ def test_task_entry_reports_failure(tmp_path, monkeypatch, catalogue):
 
 
 def test_chair_output_carries_the_route(tmp_path, monkeypatch, catalogue):
-    from agentpipe.aws import task_entry
-    monkeypatch.setenv("AGENTPIPE_CATALOGUE", str(catalogue.root))
+    from idea_agents.aws import task_entry
+    monkeypatch.setenv("IDEA_CATALOGUE", str(catalogue.root))
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
     store = LocalCaseStore(tmp_path / "cases")
     case = store.create_case("t", "request")
@@ -144,7 +144,7 @@ def test_chair_output_carries_the_route(tmp_path, monkeypatch, catalogue):
 # ------------------------------------------------------------------ lambdas
 @pytest.fixture
 def lambda_env(tmp_path, monkeypatch):
-    from agentpipe.aws.lambdas import common
+    from idea_agents.aws.lambdas import common
     store = LocalCaseStore(tmp_path / "cases")
     monkeypatch.setattr(common, "_store", store)
     sent = FakeSfn()
@@ -161,11 +161,11 @@ def lambda_env(tmp_path, monkeypatch):
             sent.success.append((taskToken, json.loads(output)))
 
     for mod in ("start_case", "respond"):
-        monkeypatch.setattr(f"agentpipe.aws.lambdas.{mod}.boto3", FakeBoto())
+        monkeypatch.setattr(f"idea_agents.aws.lambdas.{mod}.boto3", FakeBoto())
     monkeypatch.setenv("MAX_REVIEW_ROUNDS", "3")
     monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
-    from agentpipe.config import pipeline_summary
-    from agentpipe.catalogue import Catalogue
+    from idea_agents.config import pipeline_summary
+    from idea_agents.catalogue import Catalogue
     from conftest import REPO
     monkeypatch.setenv("PIPELINE_JSON", json.dumps(pipeline_summary(Catalogue(REPO / "catalogue").pipeline)))
     return store, sent
@@ -178,7 +178,7 @@ def api(body=None, case_id=None, query=None):
 
 
 def test_start_wait_answer_and_decide(lambda_env):
-    from agentpipe.aws.lambdas import get_case, respond, start_case, wait_for_people
+    from idea_agents.aws.lambdas import get_case, respond, start_case, wait_for_people
     store, sent = lambda_env
 
     resp = start_case.handler(api({"title": "Highlights", "request": "Clips please"}), None)
@@ -203,7 +203,7 @@ def test_start_wait_answer_and_decide(lambda_env):
         == "Clips please"
     assert get_case.handler(api(case_id=cid, query={"doc": "../x"}), None)["statusCode"] == 400
 
-    from agentpipe.aws.lambdas import list_cases
+    from idea_agents.aws.lambdas import list_cases
     listed = json.loads(list_cases.handler({}, None)["body"])
     assert listed["counts"]["waiting"] == 1 and listed["cases"][0]["id"] == cid
 
@@ -225,7 +225,7 @@ def test_start_wait_answer_and_decide(lambda_env):
 
 
 def test_publish_backlog_dry_run(lambda_env):
-    from agentpipe.aws.lambdas import publish_backlog
+    from idea_agents.aws.lambdas import publish_backlog
     store, _ = lambda_env
     case = store.create_case("t", "x")
     backlog = {"epics": [{"id": "E1", "title": "T", "description": "D", "stories": [
@@ -239,7 +239,7 @@ def test_publish_backlog_dry_run(lambda_env):
 
 
 def test_jira_story_fields():
-    from agentpipe.aws.lambdas.publish_backlog import issue_fields
+    from idea_agents.aws.lambdas.publish_backlog import issue_fields
     story = {"id": "E1-S1", "title": "S", "as_a": "editor", "i_want": "x", "so_that": "y",
              "acceptance_criteria": ["one", "two"], "design_refs": ["ADR-1"]}
     fields = issue_fields("ABC", "Story", story, parent_key="ABC-1")
@@ -247,7 +247,7 @@ def test_jira_story_fields():
 
 
 def test_finish_case_records_outcome(lambda_env):
-    from agentpipe.aws.lambdas import finish_case
+    from idea_agents.aws.lambdas import finish_case
     store, _ = lambda_env
     case = store.create_case("t", "x")
     finish_case.handler({"case_id": case["id"], "outcome": "failed",
@@ -273,7 +273,7 @@ def test_aws_store_round_trip(monkeypatch):
                                     {"AttributeName": "sk", "KeyType": "RANGE"}],
                          AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"},
                                                {"AttributeName": "sk", "AttributeType": "S"}])
-        from agentpipe.aws.store import AwsCaseStore
+        from idea_agents.aws.store import AwsCaseStore
         store = AwsCaseStore("cases", "records", s3=s3, dynamodb=ddb)
 
         case = store.create_case("Highlights", "Clips please", "marco")
@@ -314,7 +314,7 @@ def test_aws_store_round_trip(monkeypatch):
 
 
 def test_reopen_through_the_api(lambda_env):
-    from agentpipe.aws.lambdas import get_case, respond
+    from idea_agents.aws.lambdas import get_case, respond
     store, sent = lambda_env
     case = store.create_case("t", "x")
     case.update(status="rejected", stage="analysis", round=1)

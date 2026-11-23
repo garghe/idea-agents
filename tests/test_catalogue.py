@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from agentpipe.catalogue import Catalogue, CatalogueError, parse_frontmatter
-from agentpipe.config import ConfigError, parse_pipeline
+from idea_agents.catalogue import Catalogue, CatalogueError, parse_frontmatter
+from idea_agents.config import ConfigError, parse_pipeline
 
 
 def test_catalogue_loads_and_is_consistent(catalogue):
@@ -78,8 +78,8 @@ def test_catalogue_rejects_unknown_role(tmp_path, catalogue):
 
 def test_committed_state_machine_matches_pipeline(catalogue):
     """statemachine/pipeline.asl.json must be regenerated whenever pipeline.yaml changes."""
-    from agentpipe.aws.asl import build_definition
+    from idea_agents.aws.asl import build_definition
     from conftest import REPO
     committed = json.loads((REPO / "statemachine" / "pipeline.asl.json").read_text())
     assert committed == build_definition(catalogue.pipeline), \
-        "run: python -m agentpipe.aws.asl > statemachine/pipeline.asl.json"
+        "run: python -m idea_agents.aws.asl > statemachine/pipeline.asl.json"

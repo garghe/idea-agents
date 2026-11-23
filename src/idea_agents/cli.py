@@ -1,16 +1,16 @@
 """Command line for the local prototype.
 
-  agentpipe new examples/requests/highlights-clips.md     start a case and run it
-  agentpipe status C-20261123-ab12cd                      where the case is, what it waits for
-  agentpipe answer C-... --text "Premier League only"     answer the open questions
-  agentpipe decide C-... approve --by "Marco"             decide a gate or an escalation
-  agentpipe reopen C-... --comment "Budget now agreed"    reopen a rejected case
-  agentpipe list                                          all cases
+  idea-agents new examples/requests/highlights-clips.md     start a case and run it
+  idea-agents status C-20261123-ab12cd                      where the case is, what it waits for
+  idea-agents answer C-... --text "Premier League only"     answer the open questions
+  idea-agents decide C-... approve --by "Marco"             decide a gate or an escalation
+  idea-agents reopen C-... --comment "Budget now agreed"    reopen a rejected case
+  idea-agents list                                          all cases
 
-  agentpipe portal                                        open the web portal on http://127.0.0.1:8080
+  idea-agents portal                                        open the web portal on http://127.0.0.1:8080
 
 Local runs use scripted agents and mock data by default: no LLM calls, no cost.
-Add --live to call Claude for real (Anthropic API key, or Bedrock with AGENTPIPE_USE_BEDROCK=1).
+Add --live to call Claude for real (Anthropic API key, or Bedrock with IDEA_USE_BEDROCK=1).
 The portal always runs on mock data locally.
 """
 
@@ -75,7 +75,7 @@ def print_status(pipe: LocalPipeline, case_id: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agentpipe", description=__doc__,
+    parser = argparse.ArgumentParser(prog="idea-agents", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cases-dir", default="cases", help="where case folders live (default: ./cases)")
     parser.add_argument("--catalogue", help="catalogue folder (default: the repo's catalogue/)")

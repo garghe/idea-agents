@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from agentpipe.agent_client import AgentResult
-from agentpipe.local_pipeline import PipelineError
-from agentpipe.runner import AgentOutputError, StageRunner
+from idea_agents.agent_client import AgentResult
+from idea_agents.local_pipeline import PipelineError
+from idea_agents.runner import AgentOutputError, StageRunner
 from conftest import REQUEST
 
 
@@ -188,7 +188,7 @@ def test_document_names_are_checked(store):
 
 
 def test_a_run_that_hits_its_cap_is_not_retried(catalogue, store, tmp_path):
-    from agentpipe.runner import AgentLimitError
+    from idea_agents.runner import AgentLimitError
 
     class OverBudget:
         calls = 0

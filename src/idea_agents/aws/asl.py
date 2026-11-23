@@ -1,12 +1,12 @@
 """Generate the Step Functions state machine (Amazon States Language) from catalogue/pipeline.yaml.
 
-The generated flow matches agentpipe.local_pipeline step for step:
+The generated flow matches idea_agents.local_pipeline step for step:
 - each agent run is an ECS task that reports back through a task token (`.waitForTaskToken`)
 - waiting for people is a Lambda that stores a task token; the respond API resumes the workflow
 - reviewers run in parallel; code (the chair's `route`) decides what happens next
 - disabled gates are left out of the state machine entirely
 
-Run `python -m agentpipe.aws.asl` to print the definition with placeholders, as committed in
+Run `python -m idea_agents.aws.asl` to print the definition with placeholders, as committed in
 statemachine/pipeline.asl.json. The CDK stack calls `build_definition` with real values.
 """
 
@@ -297,7 +297,7 @@ class _Builder:
         self.states["Stopped"] = {"Type": "Fail", "Error": "CaseStopped",
                                   "Cause": "The case failed or timed out; see the case record."}
         return {
-            "Comment": "Multi-agent delivery pipeline, generated from catalogue/pipeline.yaml",
+            "Comment": "IDEA (Intake, Design & Evaluation Agents), generated from catalogue/pipeline.yaml",
             "StartAt": "Start",
             "States": self.states,
         }

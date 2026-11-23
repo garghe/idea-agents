@@ -1,10 +1,10 @@
-# Agent runner image: runs one role per ECS task (see src/agentpipe/aws/task_entry.py).
+# Agent runner image: runs one role per ECS task (see src/idea_agents/aws/task_entry.py).
 # The Claude Agent SDK wheel bundles the Claude Code CLI it drives.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    AGENTPIPE_CATALOGUE=/app/catalogue
+    IDEA_CATALOGUE=/app/catalogue
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
@@ -16,4 +16,4 @@ RUN useradd --create-home --uid 10001 agent
 USER agent
 WORKDIR /home/agent
 
-ENTRYPOINT ["python", "-m", "agentpipe.aws.task_entry"]
+ENTRYPOINT ["python", "-m", "idea_agents.aws.task_entry"]

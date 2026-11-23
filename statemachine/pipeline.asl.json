@@ -1,5 +1,5 @@
 {
-  "Comment": "Multi-agent delivery pipeline, generated from catalogue/pipeline.yaml",
+  "Comment": "IDEA (Intake, Design & Evaluation Agents), generated from catalogue/pipeline.yaml",
   "StartAt": "Start",
   "States": {
     "intake.Resume": {

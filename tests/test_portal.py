@@ -7,8 +7,8 @@ import urllib.request
 
 import pytest
 
-from agentpipe import api
-from agentpipe.config import pipeline_summary
+from idea_agents import api
+from idea_agents.config import pipeline_summary
 from conftest import REPO, REQUEST
 
 
@@ -69,7 +69,7 @@ def test_response_checks():
 # ------------------------------------------------------------------ local server
 @pytest.fixture
 def server(tmp_path):
-    from agentpipe.portal_server import make_server
+    from idea_agents.portal_server import make_server
     srv = make_server(tmp_path / "cases", port=0)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
@@ -150,7 +150,7 @@ def test_portal_files_escape_everything():
 
 # ------------------------------------------------------------------ mock by default
 def test_cli_is_mock_by_default(tmp_path, monkeypatch, capsys):
-    from agentpipe import cli
+    from idea_agents import cli
 
     class NoLLM:
         def __init__(self, *a, **k):
@@ -164,7 +164,7 @@ def test_cli_is_mock_by_default(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_live_needs_explicit_flag(tmp_path, monkeypatch):
-    from agentpipe import cli
+    from idea_agents import cli
     made = []
     monkeypatch.setattr(cli, "ClaudeAgentClient", lambda: made.append(1) or object())
     cli.build_pipeline(type("A", (), {"catalogue": None, "cases_dir": str(tmp_path), "live": True,

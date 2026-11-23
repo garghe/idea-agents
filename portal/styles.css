@@ -38,6 +38,8 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .topbar-left { display: flex; flex-wrap: wrap; align-items: center; gap: 28px; }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--accent); text-decoration: none; }
 .brand span { font-family: var(--heading); font-weight: 600; font-size: 17px; color: var(--text); }
+.brand .brand-sub { font-family: Inter, system-ui, sans-serif; font-weight: 400; font-size: 13px; color: var(--muted); padding-left: 10px; border-left: 1px solid var(--border); }
+@media (max-width: 720px) { .brand .brand-sub { display: none; } }
 .topnav { display: flex; flex-wrap: wrap; gap: 20px; }
 .topnav a { color: var(--muted); text-decoration: none; padding: 18px 0 15px; border-bottom: 3px solid transparent; }
 .topnav a.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }

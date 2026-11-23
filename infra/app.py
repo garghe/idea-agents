@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import aws_cdk as cdk  # noqa: E402
 
-from agentpipe.config import load_pipeline  # noqa: E402
+from idea_agents.config import load_pipeline  # noqa: E402
 from pipeline_stack import PipelineStack  # noqa: E402
 
 app = cdk.App()
@@ -25,7 +25,7 @@ overrides = {
     if ctx(key)
 }
 PipelineStack(
-    app, "AgentPipeline",
+    app, "IdeaAgents",
     pipeline=load_pipeline(REPO_ROOT / "catalogue" / "pipeline.yaml"),
     model_overrides=overrides,
     auth_domain_prefix=ctx("authDomainPrefix") or None,

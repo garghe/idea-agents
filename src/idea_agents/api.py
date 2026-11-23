@@ -2,7 +2,7 @@
 
 Used by the local portal server and by the AWS Lambdas, so both return exactly the same shapes.
 Standard library only (it runs inside Lambda without extra packages). `summary` is the pipeline
-summary from `agentpipe.config.pipeline_summary`, passed in as a plain dict.
+summary from `idea_agents.config.pipeline_summary`, passed in as a plain dict.
 """
 
 from __future__ import annotations
