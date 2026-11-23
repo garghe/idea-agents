@@ -1,0 +1,57 @@
+# Pipeline definition: the stage order, gates and limits.
+# The local prototype runs this file directly; the AWS state machine is generated from it
+# (see src/agentpipe/aws/asl.py), so both always follow the same flow.
+
+stages:
+  - id: intake
+    kind: agent
+    role: intake
+
+  - id: value
+    kind: agent
+    role: value
+    gate: go_no_go
+
+  - id: analysis
+    kind: agent
+    role: analysis-lead
+    gate: scope_check
+
+  - id: design
+    kind: review
+    designer: designer
+    reviewers:
+      - reviewer-architecture
+      - reviewer-security
+      - reviewer-operability
+    chair: chair
+    gate: design_signoff
+
+  - id: stories
+    kind: agent
+    role: story-writer
+    gate: backlog_release
+
+# Human gates. "enabled: false" lets the case flow straight on.
+# The first two stages run without approval, so go/no-go is off by default.
+gates:
+  go_no_go:
+    enabled: false
+    approver: sponsor
+  scope_check:
+    enabled: true
+    approver: product_owner
+  design_signoff:
+    enabled: true
+    approver: lead_architect
+  backlog_release:
+    enabled: true
+    approver: product_owner
+
+limits:
+  # Design review rounds before the case escalates to a person.
+  max_review_rounds: 3
+  # Hard stop on spend per case, across every agent run (USD).
+  case_budget_usd: 40
+  # Validation retries when an agent returns an output that fails its schema.
+  output_retries: 1

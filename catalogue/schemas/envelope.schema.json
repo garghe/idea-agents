@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent output envelope",
+  "description": "What every agent returns at the end of its run. Code reads this, never the agent's prose.",
+  "type": "object",
+  "required": ["status", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["complete", "blocked"],
+      "description": "complete: the work is done. blocked: the agent needs answers from the business before it can finish."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Three lines at most, for notifications and the case status page."
+    },
+    "document": {
+      "type": ["string", "null"],
+      "description": "File name written in ./output, or null when the role writes no document."
+    },
+    "blockers": {
+      "type": "array",
+      "description": "Questions for people. Required when status is blocked.",
+      "items": {
+        "type": "object",
+        "required": ["question", "for", "why_it_matters"],
+        "additionalProperties": false,
+        "properties": {
+          "question": {"type": "string"},
+          "for": {
+            "type": "string",
+            "enum": ["requester", "sponsor", "product_owner", "security", "lead_architect", "other"]
+          },
+          "why_it_matters": {"type": "string"}
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "description": "Review findings (reviewers only). Ids are assigned by the pipeline.",
+      "items": {
+        "type": "object",
+        "required": ["severity", "section", "issue", "evidence", "suggested_fix"],
+        "additionalProperties": false,
+        "properties": {
+          "severity": {"type": "string", "enum": ["blocker", "major", "minor"]},
+          "section": {"type": "string"},
+          "issue": {"type": "string"},
+          "evidence": {
+            "type": "string",
+            "description": "The standard, requirement or NFR this finding relies on."
+          },
+          "suggested_fix": {"type": "string"}
+        }
+      }
+    },
+    "resolved_finding_ids": {
+      "type": "array",
+      "description": "Reviewers, from round 2: ids of your own findings the revised design now fixes.",
+      "items": {"type": "string"}
+    },
+    "responses": {
+      "type": "array",
+      "description": "Designer only: one response per open finding.",
+      "items": {
+        "type": "object",
+        "required": ["finding_id", "response", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "finding_id": {"type": "string"},
+          "response": {"type": "string", "enum": ["fixed", "rejected", "needs_business_input"]},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "verdict": {
+      "type": ["string", "null"],
+      "enum": ["approve", "approve_with_changes", "reject", null],
+      "description": "Reviewers only."
+    },
+    "chair": {
+      "type": ["object", "null"],
+      "description": "Chair only.",
+      "additionalProperties": false,
+      "properties": {
+        "duplicates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["keep", "duplicate_ids"],
+            "additionalProperties": false,
+            "properties": {
+              "keep": {"type": "string"},
+              "duplicate_ids": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "description": "Trade-offs between reviewers that a person must decide.",
+          "items": {
+            "type": "object",
+            "required": ["finding_ids", "description"],
+            "additionalProperties": false,
+            "properties": {
+              "finding_ids": {"type": "array", "items": {"type": "string"}},
+              "description": {"type": "string"}
+            }
+          }
+        },
+        "change_list": {
+          "type": "array",
+          "description": "Merged, ordered list of changes for the designer.",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}

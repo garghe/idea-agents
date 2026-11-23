@@ -1,0 +1,263 @@
+"""AWS side: the generated state machine, the runner entrypoint, the Lambdas and the S3/DynamoDB store."""
+
+import json
+
+import pytest
+
+from agentpipe.aws.asl import build_definition
+from agentpipe.fake import ScriptedAgentClient
+from agentpipe.store import LocalCaseStore
+
+
+# ------------------------------------------------------------------ state machine
+def targets(state: dict) -> list[str]:
+    out = [state[k] for k in ("Next", "Default") if k in state]
+    out += [c["Next"] for c in state.get("Choices", [])]
+    out += [c["Next"] for c in state.get("Catch", [])]
+    return out
+
+
+def check_states(states: dict, start: str) -> None:
+    assert start in states
+    for name, state in states.items():
+        terminal = state["Type"] in ("Succeed", "Fail") or state.get("End")
+        assert terminal or "Next" in state or state["Type"] == "Choice", f"{name} goes nowhere"
+        for t in targets(state):
+            assert t in states, f"{name} points at missing state {t}"
+        for branch in state.get("Branches", []):
+            check_states(branch["States"], branch["StartAt"])
+    seen, todo = set(), [start]
+    while todo:
+        name = todo.pop()
+        if name not in seen:
+            seen.add(name)
+            todo += targets(states[name])
+    assert seen == set(states), f"unreachable: {set(states) - seen}"
+
+
+def test_state_machine_is_well_formed(catalogue):
+    d = build_definition(catalogue.pipeline)
+    check_states(d["States"], d["StartAt"])
+    assert d["StartAt"] == "intake.Start"
+
+
+def test_disabled_gate_is_left_out(catalogue):
+    states = build_definition(catalogue.pipeline)["States"]
+    assert "value.Gate" not in states
+    assert states["value.Blocked?"]["Default"] == "analysis.Start"
+    assert states["analysis.Blocked?"]["Default"] == "analysis.Gate"
+
+
+def test_reviewers_run_in_parallel_and_route_is_code(catalogue):
+    states = build_definition(catalogue.pipeline)["States"]
+    par = states["design.Reviewers"]
+    assert par["Type"] == "Parallel" and len(par["Branches"]) == 3
+    route = states["design.Route"]
+    assert {c["StringEquals"] for c in route["Choices"]} == {"approved", "revise", "blocked", "escalate"}
+    chair_env = states["design.Chair"]["Parameters"]["Overrides"]["ContainerOverrides"][0]["Environment"]
+    assert {"Name": "IS_CHAIR", "Value": "1"} in chair_env
+
+
+def test_agent_tasks_wait_for_a_token(catalogue):
+    states = build_definition(catalogue.pipeline)["States"]
+    for name in ("intake.Run", "design.Designer", "design.Chair", "stories.Run"):
+        assert states[name]["Resource"].endswith("runTask.waitForTaskToken")
+        assert states[name]["Parameters"]["NetworkConfiguration"]["AwsvpcConfiguration"]["AssignPublicIp"] == "DISABLED"
+    for name in ("intake.WaitAnswers", "design.Gate", "design.Escalation"):
+        assert states[name]["Resource"].endswith("lambda:invoke.waitForTaskToken")
+        assert states[name]["Catch"][0]["ErrorEquals"] == ["States.Timeout"]
+
+
+# ------------------------------------------------------------------ runner entrypoint
+class FakeSfn:
+    def __init__(self):
+        self.success, self.failure = [], []
+
+    def send_task_success(self, taskToken, output):
+        self.success.append((taskToken, json.loads(output)))
+
+    def send_task_failure(self, taskToken, error, cause):
+        self.failure.append((taskToken, error, cause))
+
+
+def test_task_entry_reports_success(tmp_path, monkeypatch, catalogue):
+    from agentpipe.aws import task_entry
+    monkeypatch.setenv("AGENTPIPE_CATALOGUE", str(catalogue.root))
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    store = LocalCaseStore(tmp_path / "cases")
+    case = store.create_case("t", "request")
+    sfn = FakeSfn()
+    env = {"TASK_TOKEN": "tok", "CASE_ID": case["id"], "STAGE": "intake", "ROLE": "intake",
+           "ROUND": "1", "ROUND_LIMIT": "3"}
+    assert task_entry.run_from_env(env, store=store, client=ScriptedAgentClient(), sfn=sfn) == 0
+    token, out = sfn.success[0]
+    assert token == "tok" and out["status"] == "blocked" and out["blockers"] == 1
+    assert store.get_case(case["id"])["status"] == "running"
+
+
+def test_task_entry_reports_failure(tmp_path, monkeypatch, catalogue):
+    from agentpipe.aws import task_entry
+    monkeypatch.setenv("AGENTPIPE_CATALOGUE", str(catalogue.root))
+    store = LocalCaseStore(tmp_path / "cases")
+    sfn = FakeSfn()
+    env = {"TASK_TOKEN": "tok", "CASE_ID": "C-missing", "STAGE": "intake", "ROLE": "intake"}
+    assert task_entry.run_from_env(env, store=store, client=ScriptedAgentClient(), sfn=sfn) == 1
+    assert sfn.failure[0][1] == "RunnerError"
+
+
+def test_chair_output_carries_the_route(tmp_path, monkeypatch, catalogue):
+    from agentpipe.aws import task_entry
+    monkeypatch.setenv("AGENTPIPE_CATALOGUE", str(catalogue.root))
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    store = LocalCaseStore(tmp_path / "cases")
+    case = store.create_case("t", "request")
+    store.put_finding(case["id"], {"id": "SEC-1", "reviewer": "reviewer-security", "severity": "major",
+                                   "status": "open", "section": "s", "issue": "i", "evidence": "e",
+                                   "suggested_fix": "f"})
+    sfn = FakeSfn()
+    env = {"TASK_TOKEN": "tok", "CASE_ID": case["id"], "STAGE": "design", "ROLE": "chair",
+           "ROUND": "3", "ROUND_LIMIT": "3", "IS_CHAIR": "1"}
+    task_entry.run_from_env(env, store=store, client=ScriptedAgentClient(), sfn=sfn)
+    assert sfn.success[0][1]["route"] == "escalate"
+
+
+# ------------------------------------------------------------------ lambdas
+@pytest.fixture
+def lambda_env(tmp_path, monkeypatch):
+    from agentpipe.aws.lambdas import common
+    store = LocalCaseStore(tmp_path / "cases")
+    monkeypatch.setattr(common, "_store", store)
+    sent = FakeSfn()
+
+    class FakeBoto:
+        def client(self, name, *a, **k):
+            assert name == "stepfunctions"
+            return self
+
+        def start_execution(self, **kw):
+            sent.success.append(("start", kw))
+
+        def send_task_success(self, taskToken, output):
+            sent.success.append((taskToken, json.loads(output)))
+
+    for mod in ("start_case", "respond"):
+        monkeypatch.setattr(f"agentpipe.aws.lambdas.{mod}.boto3", FakeBoto())
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    return store, sent
+
+
+def api(body=None, case_id=None):
+    return {"body": json.dumps(body or {}), "pathParameters": {"case_id": case_id} if case_id else None,
+            "requestContext": {"identity": {"userArn": "arn:aws:iam::1:user/marco"}}}
+
+
+def test_start_wait_answer_and_decide(lambda_env):
+    from agentpipe.aws.lambdas import get_case, respond, start_case, wait_for_people
+    store, sent = lambda_env
+
+    resp = start_case.handler(api({"title": "Highlights", "request": "Clips please"}), None)
+    assert resp["statusCode"] == 201
+    cid = json.loads(resp["body"])["case_id"]
+    assert sent.success[0][1]["name"] == cid
+    assert start_case.handler(api({"title": "x"}), None)["statusCode"] == 400
+
+    store.put_blocker(cid, {"id": "Q-1", "stage": "intake", "for": "requester", "question": "Which leagues?",
+                            "why_it_matters": "rights", "status": "open"})
+    wait_for_people.handler({"case_id": cid, "kind": "answers", "stage": "intake", "task_token": "T1"}, None)
+    case = store.get_case(cid)
+    assert case["status"] == "waiting_answers" and case["pending"]["task_token"] == "T1"
+
+    shown = json.loads(get_case.handler(api(case_id=cid), None)["body"])
+    assert "task_token" not in (shown["case"]["pending"] or {})
+    assert shown["open_questions"][0]["id"] == "Q-1"
+
+    resp = respond.handler(api({"answers": "Premier League"}, cid), None)
+    assert resp["statusCode"] == 200
+    assert sent.success[-1] == ("T1", {"outcome": "answered"})
+    assert store.open_blockers(cid) == []
+    assert "Premier League" in store.read_doc(cid, "answers/01-intake.md")
+    assert respond.handler(api({"answers": "again"}, cid), None)["statusCode"] == 409
+
+    wait_for_people.handler({"case_id": cid, "kind": "gate", "stage": "design", "gate": "design_signoff",
+                             "approver": "lead_architect", "task_token": "T2"}, None)
+    assert respond.handler(api({"outcome": "send_back"}, cid), None)["statusCode"] == 400
+    assert respond.handler(api({"outcome": "maybe"}, cid), None)["statusCode"] == 400
+    resp = respond.handler(api({"outcome": "approve", "comment": "Good"}, cid), None)
+    assert resp["statusCode"] == 200 and sent.success[-1] == ("T2", {"outcome": "approve"})
+    assert store.list_decisions(cid)[0]["by"] == "arn:aws:iam::1:user/marco"
+
+
+def test_publish_backlog_dry_run(lambda_env):
+    from agentpipe.aws.lambdas import publish_backlog
+    store, _ = lambda_env
+    case = store.create_case("t", "x")
+    backlog = {"epics": [{"id": "E1", "title": "T", "description": "D", "stories": [
+        {"id": "E1-S1", "title": "S", "as_a": "a", "i_want": "b", "so_that": "c",
+         "acceptance_criteria": ["x"]}]}]}
+    store.write_doc(case["id"], "05-backlog.json", json.dumps(backlog))
+    assert publish_backlog.handler({"case_id": case["id"]}, None) == {"issues": 2}
+    published = json.loads(store.read_doc(case["id"], "06-published.json"))
+    assert [i["key"] for i in published["issues"]] == ["DRY-E1", "DRY-E1-S1"]
+    assert store.get_case(case["id"])["status"] == "done"
+
+
+def test_jira_story_fields():
+    from agentpipe.aws.lambdas.publish_backlog import issue_fields
+    story = {"id": "E1-S1", "title": "S", "as_a": "editor", "i_want": "x", "so_that": "y",
+             "acceptance_criteria": ["one", "two"], "design_refs": ["ADR-1"]}
+    fields = issue_fields("ABC", "Story", story, parent_key="ABC-1")
+    assert fields["parent"] == {"key": "ABC-1"} and "* two" in fields["description"]
+
+
+def test_finish_case_records_outcome(lambda_env):
+    from agentpipe.aws.lambdas import finish_case
+    store, _ = lambda_env
+    case = store.create_case("t", "x")
+    finish_case.handler({"case_id": case["id"], "outcome": "failed",
+                         "error": {"error": {"Error": "RunnerError", "Cause": "boom"}}}, None)
+    saved = store.get_case(case["id"])
+    assert saved["status"] == "failed" and "RunnerError" in saved["error"]
+
+
+# ------------------------------------------------------------------ S3 + DynamoDB store
+def test_aws_store_round_trip(monkeypatch):
+    moto = pytest.importorskip("moto")
+    import boto3
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-2")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    with moto.mock_aws():
+        s3 = boto3.client("s3")
+        s3.create_bucket(Bucket="cases", CreateBucketConfiguration={"LocationConstraint": "eu-west-2"})
+        s3.put_bucket_versioning(Bucket="cases", VersioningConfiguration={"Status": "Enabled"})
+        ddb = boto3.resource("dynamodb")
+        ddb.create_table(TableName="records", BillingMode="PAY_PER_REQUEST",
+                         KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"},
+                                    {"AttributeName": "sk", "KeyType": "RANGE"}],
+                         AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"},
+                                               {"AttributeName": "sk", "AttributeType": "S"}])
+        from agentpipe.aws.store import AwsCaseStore
+        store = AwsCaseStore("cases", "records", s3=s3, dynamodb=ddb)
+
+        case = store.create_case("Highlights", "Clips please", "marco")
+        cid = case["id"]
+        assert store.get_case(cid)["title"] == "Highlights"
+        assert store.read_doc(cid, "request.md") == "Clips please"
+        assert store.read_doc(cid, "missing.md") is None
+        store.write_doc(cid, "answers/01-intake.md", "PL only")
+        store.write_doc(cid, "request.md", "v2")
+        versions = s3.list_object_versions(Bucket="cases", Prefix=f"cases/{cid}/request.md")["Versions"]
+        assert len(versions) == 2
+        assert store.list_docs(cid, "answers/") == ["answers/01-intake.md"]
+
+        store.add_run(cid, {"started_at": "2026-11-23T10:00:00+00:00", "role": "intake", "cost_usd": 0.4})
+        store.add_run(cid, {"started_at": "2026-11-23T10:05:00+00:00", "role": "value", "cost_usd": 0.6})
+        assert store.total_cost(cid) == 1.0
+        store.put_finding(cid, {"id": "SEC-1", "reviewer": "reviewer-security", "status": "open", "severity": "major"})
+        assert [f["id"] for f in store.open_findings(cid)] == ["SEC-1"]
+        store.put_blocker(cid, {"id": "Q-1", "status": "open"})
+        store.add_decision(cid, {"at": "2026-11-23T11:00:00+00:00", "outcome": "approve"})
+        assert len(store.open_blockers(cid)) == 1 and len(store.list_decisions(cid)) == 1
+        assert [c["id"] for c in store.list_cases()] == [cid]
+        with pytest.raises(KeyError):
+            store.get_case("C-nope")

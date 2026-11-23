@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Story backlog",
+  "description": "The story writer's output (05-backlog.json). Published to Jira after the backlog release gate.",
+  "type": "object",
+  "required": ["epics"],
+  "additionalProperties": false,
+  "properties": {
+    "epics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "description", "stories"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^E[0-9]+$"},
+          "title": {"type": "string"},
+          "description": {"type": "string"},
+          "stories": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "title", "as_a", "i_want", "so_that", "acceptance_criteria"],
+              "additionalProperties": false,
+              "properties": {
+                "id": {"type": "string", "pattern": "^E[0-9]+-S[0-9]+$"},
+                "title": {"type": "string"},
+                "as_a": {"type": "string"},
+                "i_want": {"type": "string"},
+                "so_that": {"type": "string"},
+                "acceptance_criteria": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+                "depends_on": {"type": "array", "items": {"type": "string"}},
+                "design_refs": {
+                  "type": "array",
+                  "description": "Sections of 04-design.md or ADR ids this story implements.",
+                  "items": {"type": "string"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

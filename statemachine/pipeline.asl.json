@@ -1,0 +1,1274 @@
+{
+  "Comment": "Multi-agent delivery pipeline, generated from catalogue/pipeline.yaml",
+  "StartAt": "intake.Start",
+  "States": {
+    "intake.Start": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round": 1,
+        "round_limit": 3
+      },
+      "Next": "intake.Run"
+    },
+    "intake.Run": {
+      "Type": "Task",
+      "Comment": "Run the intake agent",
+      "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition": "${TaskDefinitionArn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "${SubnetId1}",
+              "${SubnetId2}"
+            ],
+            "SecurityGroups": [
+              "${SecurityGroupId}"
+            ],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "runner",
+              "Environment": [
+                {
+                  "Name": "TASK_TOKEN",
+                  "Value.$": "$$.Task.Token"
+                },
+                {
+                  "Name": "CASE_ID",
+                  "Value.$": "$.case_id"
+                },
+                {
+                  "Name": "STAGE",
+                  "Value": "intake"
+                },
+                {
+                  "Name": "ROLE",
+                  "Value": "intake"
+                },
+                {
+                  "Name": "ROUND",
+                  "Value.$": "States.Format('{}', $.round)"
+                },
+                {
+                  "Name": "ROUND_LIMIT",
+                  "Value.$": "States.Format('{}', $.round_limit)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "TimeoutSeconds": 3600,
+      "ResultPath": "$.last",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ],
+      "Next": "intake.Blocked?"
+    },
+    "intake.Blocked?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.last.status",
+          "StringEquals": "blocked",
+          "Next": "intake.WaitAnswers"
+        }
+      ],
+      "Default": "value.Start"
+    },
+    "intake.WaitAnswers": {
+      "Type": "Task",
+      "Comment": "Wait for people: answers",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "answers",
+          "stage": "intake",
+          "task_token.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.response",
+      "Next": "intake.NextRound",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "intake.NextRound": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "States.MathAdd($.round, 1)",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "intake.Run"
+    },
+    "value.Start": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round": 1,
+        "round_limit": 3
+      },
+      "Next": "value.Run"
+    },
+    "value.Run": {
+      "Type": "Task",
+      "Comment": "Run the value agent",
+      "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition": "${TaskDefinitionArn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "${SubnetId1}",
+              "${SubnetId2}"
+            ],
+            "SecurityGroups": [
+              "${SecurityGroupId}"
+            ],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "runner",
+              "Environment": [
+                {
+                  "Name": "TASK_TOKEN",
+                  "Value.$": "$$.Task.Token"
+                },
+                {
+                  "Name": "CASE_ID",
+                  "Value.$": "$.case_id"
+                },
+                {
+                  "Name": "STAGE",
+                  "Value": "value"
+                },
+                {
+                  "Name": "ROLE",
+                  "Value": "value"
+                },
+                {
+                  "Name": "ROUND",
+                  "Value.$": "States.Format('{}', $.round)"
+                },
+                {
+                  "Name": "ROUND_LIMIT",
+                  "Value.$": "States.Format('{}', $.round_limit)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "TimeoutSeconds": 3600,
+      "ResultPath": "$.last",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ],
+      "Next": "value.Blocked?"
+    },
+    "value.Blocked?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.last.status",
+          "StringEquals": "blocked",
+          "Next": "value.WaitAnswers"
+        }
+      ],
+      "Default": "analysis.Start"
+    },
+    "value.WaitAnswers": {
+      "Type": "Task",
+      "Comment": "Wait for people: answers",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "answers",
+          "stage": "value",
+          "task_token.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.response",
+      "Next": "value.NextRound",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "value.NextRound": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "States.MathAdd($.round, 1)",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "value.Run"
+    },
+    "analysis.Start": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round": 1,
+        "round_limit": 3
+      },
+      "Next": "analysis.Run"
+    },
+    "analysis.Gate": {
+      "Type": "Task",
+      "Comment": "Wait for people: gate",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "gate",
+          "stage": "analysis",
+          "task_token.$": "$$.Task.Token",
+          "gate": "scope_check",
+          "approver": "product_owner"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.decision",
+      "Next": "analysis.GateOutcome",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "analysis.GateOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.decision.outcome",
+          "StringEquals": "approve",
+          "Next": "design.Start"
+        },
+        {
+          "Variable": "$.decision.outcome",
+          "StringEquals": "send_back",
+          "Next": "analysis.NextRound"
+        }
+      ],
+      "Default": "Rejected"
+    },
+    "analysis.Run": {
+      "Type": "Task",
+      "Comment": "Run the analysis-lead agent",
+      "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition": "${TaskDefinitionArn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "${SubnetId1}",
+              "${SubnetId2}"
+            ],
+            "SecurityGroups": [
+              "${SecurityGroupId}"
+            ],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "runner",
+              "Environment": [
+                {
+                  "Name": "TASK_TOKEN",
+                  "Value.$": "$$.Task.Token"
+                },
+                {
+                  "Name": "CASE_ID",
+                  "Value.$": "$.case_id"
+                },
+                {
+                  "Name": "STAGE",
+                  "Value": "analysis"
+                },
+                {
+                  "Name": "ROLE",
+                  "Value": "analysis-lead"
+                },
+                {
+                  "Name": "ROUND",
+                  "Value.$": "States.Format('{}', $.round)"
+                },
+                {
+                  "Name": "ROUND_LIMIT",
+                  "Value.$": "States.Format('{}', $.round_limit)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "TimeoutSeconds": 3600,
+      "ResultPath": "$.last",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ],
+      "Next": "analysis.Blocked?"
+    },
+    "analysis.Blocked?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.last.status",
+          "StringEquals": "blocked",
+          "Next": "analysis.WaitAnswers"
+        }
+      ],
+      "Default": "analysis.Gate"
+    },
+    "analysis.WaitAnswers": {
+      "Type": "Task",
+      "Comment": "Wait for people: answers",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "answers",
+          "stage": "analysis",
+          "task_token.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.response",
+      "Next": "analysis.NextRound",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "analysis.NextRound": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "States.MathAdd($.round, 1)",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "analysis.Run"
+    },
+    "design.Start": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round": 1,
+        "round_limit": 3
+      },
+      "Next": "design.Designer"
+    },
+    "design.Designer": {
+      "Type": "Task",
+      "Comment": "Run the designer agent",
+      "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition": "${TaskDefinitionArn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "${SubnetId1}",
+              "${SubnetId2}"
+            ],
+            "SecurityGroups": [
+              "${SecurityGroupId}"
+            ],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "runner",
+              "Environment": [
+                {
+                  "Name": "TASK_TOKEN",
+                  "Value.$": "$$.Task.Token"
+                },
+                {
+                  "Name": "CASE_ID",
+                  "Value.$": "$.case_id"
+                },
+                {
+                  "Name": "STAGE",
+                  "Value": "design"
+                },
+                {
+                  "Name": "ROLE",
+                  "Value": "designer"
+                },
+                {
+                  "Name": "ROUND",
+                  "Value.$": "States.Format('{}', $.round)"
+                },
+                {
+                  "Name": "ROUND_LIMIT",
+                  "Value.$": "States.Format('{}', $.round_limit)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "TimeoutSeconds": 3600,
+      "ResultPath": "$.last",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ],
+      "Next": "design.Designer.Blocked?"
+    },
+    "design.Designer.Blocked?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.last.status",
+          "StringEquals": "blocked",
+          "Next": "design.Designer.WaitAnswers"
+        }
+      ],
+      "Default": "design.Reviewers"
+    },
+    "design.Designer.WaitAnswers": {
+      "Type": "Task",
+      "Comment": "Wait for people: answers",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "answers",
+          "stage": "design",
+          "task_token.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.response",
+      "Next": "design.Designer",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "design.Reviewers": {
+      "Type": "Parallel",
+      "Comment": "Reviewers work independently and cannot see each other's findings",
+      "Branches": [
+        {
+          "StartAt": "reviewer-architecture",
+          "States": {
+            "reviewer-architecture": {
+              "Type": "Task",
+              "Comment": "Run the reviewer-architecture agent",
+              "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+              "Parameters": {
+                "LaunchType": "FARGATE",
+                "Cluster": "${ClusterArn}",
+                "TaskDefinition": "${TaskDefinitionArn}",
+                "NetworkConfiguration": {
+                  "AwsvpcConfiguration": {
+                    "Subnets": [
+                      "${SubnetId1}",
+                      "${SubnetId2}"
+                    ],
+                    "SecurityGroups": [
+                      "${SecurityGroupId}"
+                    ],
+                    "AssignPublicIp": "DISABLED"
+                  }
+                },
+                "Overrides": {
+                  "ContainerOverrides": [
+                    {
+                      "Name": "runner",
+                      "Environment": [
+                        {
+                          "Name": "TASK_TOKEN",
+                          "Value.$": "$$.Task.Token"
+                        },
+                        {
+                          "Name": "CASE_ID",
+                          "Value.$": "$.case_id"
+                        },
+                        {
+                          "Name": "STAGE",
+                          "Value": "design"
+                        },
+                        {
+                          "Name": "ROLE",
+                          "Value": "reviewer-architecture"
+                        },
+                        {
+                          "Name": "ROUND",
+                          "Value.$": "States.Format('{}', $.round)"
+                        },
+                        {
+                          "Name": "ROUND_LIMIT",
+                          "Value.$": "States.Format('{}', $.round_limit)"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "TimeoutSeconds": 3600,
+              "ResultPath": null,
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "reviewer-security",
+          "States": {
+            "reviewer-security": {
+              "Type": "Task",
+              "Comment": "Run the reviewer-security agent",
+              "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+              "Parameters": {
+                "LaunchType": "FARGATE",
+                "Cluster": "${ClusterArn}",
+                "TaskDefinition": "${TaskDefinitionArn}",
+                "NetworkConfiguration": {
+                  "AwsvpcConfiguration": {
+                    "Subnets": [
+                      "${SubnetId1}",
+                      "${SubnetId2}"
+                    ],
+                    "SecurityGroups": [
+                      "${SecurityGroupId}"
+                    ],
+                    "AssignPublicIp": "DISABLED"
+                  }
+                },
+                "Overrides": {
+                  "ContainerOverrides": [
+                    {
+                      "Name": "runner",
+                      "Environment": [
+                        {
+                          "Name": "TASK_TOKEN",
+                          "Value.$": "$$.Task.Token"
+                        },
+                        {
+                          "Name": "CASE_ID",
+                          "Value.$": "$.case_id"
+                        },
+                        {
+                          "Name": "STAGE",
+                          "Value": "design"
+                        },
+                        {
+                          "Name": "ROLE",
+                          "Value": "reviewer-security"
+                        },
+                        {
+                          "Name": "ROUND",
+                          "Value.$": "States.Format('{}', $.round)"
+                        },
+                        {
+                          "Name": "ROUND_LIMIT",
+                          "Value.$": "States.Format('{}', $.round_limit)"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "TimeoutSeconds": 3600,
+              "ResultPath": null,
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "reviewer-operability",
+          "States": {
+            "reviewer-operability": {
+              "Type": "Task",
+              "Comment": "Run the reviewer-operability agent",
+              "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+              "Parameters": {
+                "LaunchType": "FARGATE",
+                "Cluster": "${ClusterArn}",
+                "TaskDefinition": "${TaskDefinitionArn}",
+                "NetworkConfiguration": {
+                  "AwsvpcConfiguration": {
+                    "Subnets": [
+                      "${SubnetId1}",
+                      "${SubnetId2}"
+                    ],
+                    "SecurityGroups": [
+                      "${SecurityGroupId}"
+                    ],
+                    "AssignPublicIp": "DISABLED"
+                  }
+                },
+                "Overrides": {
+                  "ContainerOverrides": [
+                    {
+                      "Name": "runner",
+                      "Environment": [
+                        {
+                          "Name": "TASK_TOKEN",
+                          "Value.$": "$$.Task.Token"
+                        },
+                        {
+                          "Name": "CASE_ID",
+                          "Value.$": "$.case_id"
+                        },
+                        {
+                          "Name": "STAGE",
+                          "Value": "design"
+                        },
+                        {
+                          "Name": "ROLE",
+                          "Value": "reviewer-operability"
+                        },
+                        {
+                          "Name": "ROUND",
+                          "Value.$": "States.Format('{}', $.round)"
+                        },
+                        {
+                          "Name": "ROUND_LIMIT",
+                          "Value.$": "States.Format('{}', $.round_limit)"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "TimeoutSeconds": 3600,
+              "ResultPath": null,
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": null,
+      "Next": "design.Chair",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "design.Chair": {
+      "Type": "Task",
+      "Comment": "Run the chair agent",
+      "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition": "${TaskDefinitionArn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "${SubnetId1}",
+              "${SubnetId2}"
+            ],
+            "SecurityGroups": [
+              "${SecurityGroupId}"
+            ],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "runner",
+              "Environment": [
+                {
+                  "Name": "TASK_TOKEN",
+                  "Value.$": "$$.Task.Token"
+                },
+                {
+                  "Name": "CASE_ID",
+                  "Value.$": "$.case_id"
+                },
+                {
+                  "Name": "STAGE",
+                  "Value": "design"
+                },
+                {
+                  "Name": "ROLE",
+                  "Value": "chair"
+                },
+                {
+                  "Name": "ROUND",
+                  "Value.$": "States.Format('{}', $.round)"
+                },
+                {
+                  "Name": "ROUND_LIMIT",
+                  "Value.$": "States.Format('{}', $.round_limit)"
+                },
+                {
+                  "Name": "IS_CHAIR",
+                  "Value": "1"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "TimeoutSeconds": 3600,
+      "ResultPath": "$.last",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ],
+      "Next": "design.Route"
+    },
+    "design.Gate": {
+      "Type": "Task",
+      "Comment": "Wait for people: gate",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "gate",
+          "stage": "design",
+          "task_token.$": "$$.Task.Token",
+          "gate": "design_signoff",
+          "approver": "lead_architect"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.decision",
+      "Next": "design.GateOutcome",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "design.GateOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.decision.outcome",
+          "StringEquals": "approve",
+          "Next": "stories.Start"
+        },
+        {
+          "Variable": "$.decision.outcome",
+          "StringEquals": "send_back",
+          "Next": "design.NextRound"
+        }
+      ],
+      "Default": "Rejected"
+    },
+    "design.Route": {
+      "Type": "Choice",
+      "Comment": "The route is computed by code from the open findings, never by an agent",
+      "Choices": [
+        {
+          "Variable": "$.last.route",
+          "StringEquals": "approved",
+          "Next": "design.Gate"
+        },
+        {
+          "Variable": "$.last.route",
+          "StringEquals": "revise",
+          "Next": "design.NextRound"
+        },
+        {
+          "Variable": "$.last.route",
+          "StringEquals": "blocked",
+          "Next": "design.WaitAnswers"
+        },
+        {
+          "Variable": "$.last.route",
+          "StringEquals": "escalate",
+          "Next": "design.Escalation"
+        }
+      ],
+      "Default": "Failed"
+    },
+    "design.WaitAnswers": {
+      "Type": "Task",
+      "Comment": "Wait for people: answers",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "answers",
+          "stage": "design",
+          "task_token.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.response",
+      "Next": "design.NextRound",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "design.NextRound": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "States.MathAdd($.round, 1)",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "design.Designer"
+    },
+    "design.Escalation": {
+      "Type": "Task",
+      "Comment": "Wait for people: escalation",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "escalation",
+          "stage": "design",
+          "task_token.$": "$$.Task.Token",
+          "approver": "lead_architect"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.decision",
+      "Next": "design.EscalationOutcome",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "design.EscalationOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.decision.outcome",
+          "StringEquals": "approve",
+          "Next": "stories.Start"
+        },
+        {
+          "Variable": "$.decision.outcome",
+          "StringEquals": "send_back",
+          "Next": "design.Reopen"
+        }
+      ],
+      "Default": "Rejected"
+    },
+    "design.Reopen": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "States.MathAdd($.round, 1)",
+        "round_limit.$": "States.MathAdd($.round, 3)"
+      },
+      "Next": "design.Designer"
+    },
+    "stories.Start": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round": 1,
+        "round_limit": 3
+      },
+      "Next": "stories.Run"
+    },
+    "stories.Gate": {
+      "Type": "Task",
+      "Comment": "Wait for people: gate",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "gate",
+          "stage": "stories",
+          "task_token.$": "$$.Task.Token",
+          "gate": "backlog_release",
+          "approver": "product_owner"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.decision",
+      "Next": "stories.GateOutcome",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "stories.GateOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.decision.outcome",
+          "StringEquals": "approve",
+          "Next": "PublishBacklog"
+        },
+        {
+          "Variable": "$.decision.outcome",
+          "StringEquals": "send_back",
+          "Next": "stories.NextRound"
+        }
+      ],
+      "Default": "Rejected"
+    },
+    "stories.Run": {
+      "Type": "Task",
+      "Comment": "Run the story-writer agent",
+      "Resource": "arn:aws:states:::ecs:runTask.waitForTaskToken",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition": "${TaskDefinitionArn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "${SubnetId1}",
+              "${SubnetId2}"
+            ],
+            "SecurityGroups": [
+              "${SecurityGroupId}"
+            ],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "runner",
+              "Environment": [
+                {
+                  "Name": "TASK_TOKEN",
+                  "Value.$": "$$.Task.Token"
+                },
+                {
+                  "Name": "CASE_ID",
+                  "Value.$": "$.case_id"
+                },
+                {
+                  "Name": "STAGE",
+                  "Value": "stories"
+                },
+                {
+                  "Name": "ROLE",
+                  "Value": "story-writer"
+                },
+                {
+                  "Name": "ROUND",
+                  "Value.$": "States.Format('{}', $.round)"
+                },
+                {
+                  "Name": "ROUND_LIMIT",
+                  "Value.$": "States.Format('{}', $.round_limit)"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "TimeoutSeconds": 3600,
+      "ResultPath": "$.last",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ],
+      "Next": "stories.Blocked?"
+    },
+    "stories.Blocked?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.last.status",
+          "StringEquals": "blocked",
+          "Next": "stories.WaitAnswers"
+        }
+      ],
+      "Default": "stories.Gate"
+    },
+    "stories.WaitAnswers": {
+      "Type": "Task",
+      "Comment": "Wait for people: answers",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${WaitForPeopleFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "kind": "answers",
+          "stage": "stories",
+          "task_token.$": "$$.Task.Token"
+        }
+      },
+      "TimeoutSeconds": 2592000,
+      "ResultPath": "$.response",
+      "Next": "stories.NextRound",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "ResultPath": "$.error",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "stories.NextRound": {
+      "Type": "Pass",
+      "Parameters": {
+        "case_id.$": "$.case_id",
+        "round.$": "States.MathAdd($.round, 1)",
+        "round_limit.$": "$.round_limit"
+      },
+      "Next": "stories.Run"
+    },
+    "PublishBacklog": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PublishBacklogFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id"
+        }
+      },
+      "ResultPath": null,
+      "Next": "Done",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Failed"
+        }
+      ]
+    },
+    "Done": {
+      "Type": "Succeed"
+    },
+    "Rejected": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FinishCaseFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "outcome": "rejected",
+          "error.$": "$"
+        }
+      },
+      "ResultPath": null,
+      "Next": "Succeeded"
+    },
+    "TimedOut": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FinishCaseFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "outcome": "timed_out",
+          "error.$": "$"
+        }
+      },
+      "ResultPath": null,
+      "Next": "Stopped"
+    },
+    "Failed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FinishCaseFunctionArn}",
+        "Payload": {
+          "case_id.$": "$.case_id",
+          "outcome": "failed",
+          "error.$": "$"
+        }
+      },
+      "ResultPath": null,
+      "Next": "Stopped"
+    },
+    "Succeeded": {
+      "Type": "Succeed"
+    },
+    "Stopped": {
+      "Type": "Fail",
+      "Error": "CaseStopped",
+      "Cause": "The case failed or timed out; see the case record."
+    }
+  }
+}
