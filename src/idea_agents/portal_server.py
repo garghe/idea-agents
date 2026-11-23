@@ -4,6 +4,7 @@ Locally the portal always uses the scripted agents: every document is mock data,
 and the page says so in a banner. The API it serves has the same routes and shapes as the AWS API:
 
   GET  /config.json                        mode, pipeline stages, sample request
+  GET  /api/roles                          the agent roles: description, model, budget, limits
   GET  /api/cases                          list of cases with counts
   POST /api/cases                          start a case {title, request, requester}
   GET  /api/cases/<id>                     case detail
@@ -27,6 +28,7 @@ from .catalogue import Catalogue
 from .config import pipeline_summary
 from .fake import ScriptedAgentClient
 from .local_pipeline import LocalPipeline
+from .roles import roles_summary
 from .runner import StageRunner
 from .store import REJECTED, WAITING_ANSWERS, LocalCaseStore
 
@@ -62,6 +64,9 @@ class PortalApp:
         return {"mode": "mock", "apiBase": "/api", "pipeline": self.summary, "sampleRequest": sample_request}
 
     # Each handler returns (status, body)
+    def roles(self):
+        return 200, roles_summary(self.catalogue)
+
     def list_cases(self):
         return 200, api.list_view(self.store, self.summary)
 
@@ -140,6 +145,8 @@ def make_handler(app: PortalApp):
                 return self._send(200, app.config())
             if url.path == "/api/cases":
                 return self._send(*app.list_cases())
+            if url.path == "/api/roles":
+                return self._send(*app.roles())
             m = CASE_PATH.match(url.path)
             if m and not m.group(2):
                 doc = (parse_qs(url.query).get("doc") or [None])[0]

@@ -84,14 +84,15 @@ def main() -> int:
             page = browser.new_page(viewport={"width": 1440, "height": 900}, device_scale_factor=1)
             page.route("**/fonts.googleapis.com/**", lambda route: route.abort())
 
-            def shot(url: str, name: str, ready: str, click: str | None = None) -> None:
+            def shot(url: str, name: str, ready: str, click: str | None = None, full: bool = True) -> None:
                 page.goto(base + url)
                 page.wait_for_selector(ready)
                 if click:
                     page.click(click)
                     page.wait_for_timeout(300)
                 page.wait_for_timeout(300)
-                page.screenshot(path=str(out / name), full_page=True)
+                page.evaluate("window.scrollTo(0, 0)")
+                page.screenshot(path=str(out / name), full_page=full)
                 print("saved", out / name)
 
             shot("/#/cases", "case-list.png", "table.cases")
@@ -100,6 +101,7 @@ def main() -> int:
             shot(f"/#/cases/{ids['ads']}", "case-backlog.png", ".tab", click='.tab[data-doc="05-backlog.json"]')
             shot(f"/#/cases/{ids['rail']}", "case-rejected.png", "#reopen-h")
             shot("/#/new", "new-request.png", "#new-form", click="#fill-sample")
+            shot("/#/roles", "roles.png", ".role-card", full=False)
             browser.close()
         server.shutdown()
     return 0

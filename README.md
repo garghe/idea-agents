@@ -59,6 +59,13 @@ the review findings and the activity log.
 
 ![New request](docs/screenshots/new-request.png)
 
+**Roles.** What each agent does, the model it uses, its budget per run and turn limit, its tools,
+what it reads and writes, its specialist subagents and its full instructions; plus the case budget,
+review rounds and retries. Read-only: limits are changed in the catalogue and deployed
+(see [How to change the limits](#how-to-change-the-limits)). Each case page also shows spend by role.
+
+![Roles page](docs/screenshots/roles.png)
+
 ## What is in the repo
 
 | Path | What it is |
@@ -72,7 +79,7 @@ the review findings and the activity log.
 | `.github/workflows/` | `tests.yml` runs the tests on every push; `deploy.yml` deploys to AWS after an approval. |
 | `scripts/take_screenshots.py` | Seeds mock cases and captures the portal screenshots above. |
 | `examples/requests/` | A sample business request. |
-| `tests/` | 79 tests; no Claude or AWS calls needed. |
+| `tests/` | 84 tests; no Claude or AWS calls needed. |
 
 ## Run it locally (mock data, no LLM calls)
 
@@ -248,6 +255,10 @@ anything; the hard stops are levels 1 to 3.
 ### Seeing what was spent
 
 - The portal shows each case's spend against its budget, and the case list shows spend per case.
+- Each case page breaks the spend down by role: how many runs, what they cost, the cap each ran with,
+  and a **hit cap** marker when a run was stopped by its cap.
+- The **Roles** page (and `GET /api/roles`) shows every role's budget per run, turn limit and model,
+  and the case limits, as they are in the deployed catalogue.
 - Each agent run is stored with its estimated cost, the cap it ran with, and whether it hit a cap
   (`records.json` locally, the DynamoDB table on AWS).
 - **These figures are estimates.** The Agent SDK works them out from token counts at list prices.
@@ -305,7 +316,7 @@ updated and removed as a unit.
 
 | Component | Its role here | How it is set up |
 | --- | --- | --- |
-| **AWS Lambda** (7 functions) | Small, fast steps: start a case, list and read cases (read-only), record responses, wait for people, publish to Jira, record how a case ended | Python 3.12 on Arm (Graviton), X-Ray tracing, an error alarm each; only boto3 needed |
+| **AWS Lambda** (8 functions) | Small, fast steps: start a case, list and read cases and roles (read-only), record responses, wait for people, publish to Jira, record how a case ended | Python 3.12 on Arm (Graviton), X-Ray tracing, an error alarm each; only boto3 needed |
 | **AWS Step Functions** | Runs each case: the stage order, gates, review loop, retries and timeouts. Waiting for people uses a task token, so nothing runs (or costs) while a case waits | Standard workflow generated from `pipeline.yaml`; a reopened case starts a new execution that resumes at the rejected stage; retries temporary errors only; X-Ray tracing; error logs; alarms on failed and timed-out cases |
 | **Amazon ECS on AWS Fargate** | Runs one agent per task: loads the role, prepares the files, calls Claude through the Agent SDK, checks and saves the output | 1 vCPU, 4 GB; non-root container; isolated subnets; logs to CloudWatch |
 | **Amazon ECR** | Stores the runner image built from `Dockerfile` | Created and filled by CDK's asset publishing on deploy |
@@ -315,7 +326,7 @@ updated and removed as a unit.
 
 | Component | Its role here | How it is set up |
 | --- | --- | --- |
-| **Amazon S3, case documents bucket** | The case file: request, brief, business case, requirements, design, backlog, answers | Private, encrypted, HTTPS only, versioned (every version kept), access logs; kept if the stack is deleted |
+| **Amazon S3, case documents bucket** | The case file: request, brief, business case, requirements, design, backlog, answers | Private, encrypted, HTTPS only, versioned (every version kept), access logs; kept if the stack is deleted. Each deploy also writes `catalogue/roles.json` here (the Roles page summary), never touching case files |
 | **Amazon DynamoDB** | Case records: status, each agent run and its cost, findings, questions, decisions | On-demand capacity, point-in-time recovery, deletion protection; kept if the stack is deleted |
 | **AWS Secrets Manager** | Teams webhook and Jira credentials | Created empty; the features stay off until you fill them |
 | **AWS Systems Manager Parameter Store** | The portal address, used in links in Teams messages | One plain parameter |
@@ -638,9 +649,10 @@ needs the signed-in user's Cognito ID token in the `Authorization` header.
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
+| `GET /api/roles` | | Every role: description, model, budget per run, turn limit, tools, reads and writes, specialists, instructions; plus the case limits and house rules |
 | `GET /api/cases` | | Cases with progress, who they wait for and spend, plus counts |
 | `POST /api/cases` | `{"title", "request", "requester"}` | `{"case_id"}` |
-| `GET /api/cases/{id}` | | The case page: progress, questions, findings, activity, cost |
+| `GET /api/cases/{id}` | | The case page: progress, questions, findings, activity, cost and spend by role |
 | `GET /api/cases/{id}?doc=04-design.md` | | One document |
 | `POST /api/cases/{id}/respond` | `{"answers"}`; or `{"outcome": "approve" \| "send_back" \| "reject", "comment"}` at a gate; or `{"outcome": "reopen", "comment"}` for a rejected case | `{"outcome"}` |
 
@@ -653,7 +665,7 @@ pip install -e ".[dev]" "moto[s3,dynamodb]" cfn-lint -r infra/requirements.txt
 pytest
 ```
 
-79 tests cover the catalogue, the envelope and backlog rules, the path guard, the review routing,
+84 tests cover the catalogue, the roles summary, the envelope and backlog rules, the path guard, the review routing,
 full pipeline runs (blockers, review rounds, conflicts, escalation, rejection, reopening, budget stop, spend caps), the API
 views, the local portal server end to end, mock-by-default local runs, the state machine, the runner
 entrypoint, the Lambdas, the S3/DynamoDB store (with moto), the CDK stack (synth, `cfn-lint` and the Well-Architected controls), and the CI/CD deploy role and workflow.

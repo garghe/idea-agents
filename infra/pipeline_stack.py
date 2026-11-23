@@ -44,7 +44,9 @@ from aws_cdk import aws_stepfunctions as sfn
 from constructs import Construct
 
 from idea_agents.aws.asl import Refs, build_definition
+from idea_agents.catalogue import Catalogue
 from idea_agents.config import PipelineConfig, pipeline_summary
+from idea_agents.roles import roles_summary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTAINER_NAME = "runner"
@@ -228,6 +230,15 @@ class PipelineStack(Stack):
         respond_fn.add_to_role_policy(iam.PolicyStatement(actions=["states:SendTaskSuccess"], resources=["*"]))
         get_fn = fn("GetCase", "get_case", writes=False)
         list_fn = fn("ListCases", "list_cases", writes=False)
+        roles_fn = fn("ListRoles", "list_roles", writes=False)
+
+        # The roles summary (descriptions, models, budgets) for the portal's Roles page, published from
+        # the same catalogue that is built into the runner image. prune=False: never touch case files.
+        s3deploy.BucketDeployment(
+            self, "RolesSummary",
+            sources=[s3deploy.Source.json_data("roles.json", roles_summary(Catalogue(REPO_ROOT / "catalogue")))],
+            destination_bucket=bucket, destination_key_prefix="catalogue/", prune=False,
+        )
 
         # ---------------------------------------------------------------- state machine
         refs = Refs(
@@ -323,7 +334,9 @@ class PipelineStack(Stack):
                     caller=False, http_method=True, ip=True, protocol=True, request_time=True,
                     resource_path=True, response_length=True, status=True, user=True)),
         )
-        cases = rest_api.root.add_resource("api").add_resource("cases")
+        api_root = rest_api.root.add_resource("api")
+        api_root.add_resource("roles").add_method("GET", apigw.LambdaIntegration(roles_fn))
+        cases = api_root.add_resource("cases")
         cases.add_method("GET", apigw.LambdaIntegration(list_fn))
         cases.add_method("POST", apigw.LambdaIntegration(start_fn))
         one = cases.add_resource("{case_id}")

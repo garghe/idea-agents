@@ -335,3 +335,22 @@ def test_reopen_through_the_api(lambda_env):
     assert store.list_decisions(cid)[-1]["by"] == "Marco G"
     again = respond.handler(api({"outcome": "reopen", "comment": "again"}, cid), None)
     assert again["statusCode"] == 400 and "only a rejected case" in again["body"]
+
+
+def test_list_roles_lambda_reads_the_published_summary(monkeypatch):
+    from idea_agents.aws.lambdas import list_roles
+
+    class Body:
+        def read(self):
+            return b'{"roles": [{"name": "intake"}], "limits": {}}'
+
+    class FakeS3:
+        def get_object(self, Bucket, Key):
+            assert (Bucket, Key) == ("cases-bucket", "catalogue/roles.json")
+            return {"Body": Body()}
+
+    monkeypatch.setattr(list_roles, "_cache", None)
+    monkeypatch.setattr(list_roles.boto3, "client", lambda name: FakeS3())
+    monkeypatch.setenv("CASES_BUCKET", "cases-bucket")
+    resp = list_roles.handler({}, None)
+    assert resp["statusCode"] == 200 and json.loads(resp["body"])["roles"][0]["name"] == "intake"

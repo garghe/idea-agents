@@ -170,3 +170,39 @@ def test_cli_live_needs_explicit_flag(tmp_path, monkeypatch):
     cli.build_pipeline(type("A", (), {"catalogue": None, "cases_dir": str(tmp_path), "live": True,
                                       "keep_workspaces": False})())
     assert made == [1]
+
+
+# ------------------------------------------------------------------ roles (read-only)
+def test_roles_summary_matches_the_catalogue(catalogue):
+    from idea_agents.roles import roles_summary
+    data = roles_summary(catalogue)
+    names = [r["name"] for r in data["roles"]]
+    assert names == ["intake", "value", "analysis-lead", "designer", "reviewer-architecture",
+                     "reviewer-security", "reviewer-operability", "chair", "story-writer"]
+    for r in data["roles"]:
+        role = catalogue.role(r["name"])
+        assert (r["budget_usd"], r["max_turns"], r["model"], r["description"]) == \
+            (role.budget_usd, role.max_turns, role.model, role.description)
+        assert r["instructions"] == role.prompt
+    lead = next(r for r in data["roles"] if r["name"] == "analysis-lead")
+    assert [s["name"] for s in lead["specialists"]] == ["data", "security", "operations", "commercial"]
+    assert data["limits"]["case_budget_usd"] == catalogue.pipeline.limits.case_budget_usd
+    assert "House rules" in data["house_rules"]
+
+
+def test_local_portal_serves_roles(server):
+    status, data = call(server, "/api/roles")
+    assert status == 200 and len(data["roles"]) == 9 and data["roles"][0]["label"] == "Intake agent"
+
+
+def test_spend_by_role(store, catalogue):
+    case = store.create_case("t", "x")
+    for role, cost, budget, hit in (("designer", 2.5, 8.0, False), ("designer", 3.0, 8.0, True),
+                                    ("chair", 0.4, 3.0, False)):
+        store.add_run(case["id"], {"role": role, "cost_usd": cost, "budget_usd": budget, "limit_hit": hit,
+                                   "started_at": "2026-11-23T10:00:00.000+00:00"})
+    view = api.detail_view(store, case["id"], pipeline_summary(catalogue.pipeline))
+    assert view["spend_by_role"] == [
+        {"role": "designer", "label": "Designer", "runs": 2, "cost_usd": 5.5, "budget_usd": 8.0, "limit_hit": True},
+        {"role": "chair", "label": "Review chair", "runs": 1, "cost_usd": 0.4, "budget_usd": 3.0, "limit_hit": False},
+    ]

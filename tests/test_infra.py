@@ -70,7 +70,7 @@ def test_stack_shape(synth):
 
 def test_every_api_method_needs_sign_in(synth):
     methods = resources(synth, "AWS::ApiGateway::Method")
-    assert len(methods) == 4
+    assert len(methods) == 5  # roles, list cases, start case, get case, respond
     assert all(m["Properties"]["AuthorizationType"] == "COGNITO_USER_POOLS" for m in methods)
 
 
@@ -200,3 +200,9 @@ def test_cost_controls(synth):
     assert kinds == ["ACTUAL", "FORECASTED"]
     tagged = resources(synth, "AWS::DynamoDB::Table")[0]["Properties"]["Tags"]
     assert {"Key": "Project", "Value": "idea-agents"} in tagged and {"Key": "CostCentre", "Value": "ARCH"} in tagged
+
+
+def test_roles_summary_is_published_without_touching_case_files(synth):
+    deploys = [r["Properties"] for r in resources(synth, "Custom::CDKBucketDeployment")
+               if r["Properties"].get("DestinationBucketKeyPrefix") == "catalogue/"]
+    assert len(deploys) == 1 and deploys[0]["Prune"] is False

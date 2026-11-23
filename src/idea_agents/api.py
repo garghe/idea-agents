@@ -170,6 +170,27 @@ def activity(runs: list[dict], decisions: list[dict], blockers: list[dict]) -> l
     return items
 
 
+def spend_by_role(runs: list[dict]) -> list[dict]:
+    """Per role: how many runs, what they cost, the cap the latest run had, and whether any hit a cap."""
+    order: list[str] = []
+    out: dict[str, dict] = {}
+    for r in runs:
+        role = r.get("role")
+        if not role:
+            continue
+        if role not in out:
+            order.append(role)
+            out[role] = {"role": role, "label": ROLE_LABELS.get(role, role), "runs": 0, "cost_usd": 0.0,
+                         "budget_usd": None, "limit_hit": False}
+        e = out[role]
+        e["runs"] += 1
+        e["cost_usd"] = round(e["cost_usd"] + (r.get("cost_usd") or 0.0), 4)
+        if r.get("budget_usd") is not None:
+            e["budget_usd"] = r["budget_usd"]
+        e["limit_hit"] = e["limit_hit"] or bool(r.get("limit_hit"))
+    return [out[k] for k in order]
+
+
 def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
     case = store.get_case(case_id)
     runs = store.list_runs(case_id)
@@ -194,6 +215,7 @@ def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
         "cost_usd": round(sum(r.get("cost_usd") or 0.0 for r in runs), 2),
         "budget_usd": summary.get("budget_usd"),
         "agent_runs": len(runs),
+        "spend_by_role": spend_by_role(runs),
         "can_reopen": case["status"] == REJECTED,
         "reopen_stage": case["stage"] if case["status"] == REJECTED else None,
     }

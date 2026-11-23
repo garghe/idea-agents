@@ -483,7 +483,17 @@
       '<section class="card" aria-labelledby="cost-h"><h2 id="cost-h">Spend</h2>' +
       '<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span>' + money(d.cost_usd) + ' used</span><span class="muted">' + money(d.budget_usd) + ' budget</span></div>' +
       '<div class="bar" role="img" aria-label="' + pct + ' percent of budget used"><div style="width:' + pct + '%"></div></div>' +
-      '<div class="muted small" style="margin-top:8px">' + d.agent_runs + ' agent runs' + (isMock() ? ' · mock agents, no LLM cost' : '') + '</div></section>';
+      '<div class="muted small" style="margin-top:8px">' + d.agent_runs + ' agent runs' + (isMock() ? ' · mock agents, no LLM cost' : '') + '</div>' +
+      (d.spend_by_role && d.spend_by_role.length ? '<h3 style="font-size:14px;margin:18px 0 0">Spend by role</h3><ul class="role-spend">' +
+        d.spend_by_role.map(function (r) {
+          var cap = r.budget_usd ? Math.min(100, Math.round(100 * r.cost_usd / (r.budget_usd * r.runs))) : 0;
+          return '<li><div class="row"><span>' + esc(r.label) + (r.limit_hit ? ' <span class="pill cap">hit cap</span>' : '') +
+            '<br><span class="muted small">' + r.runs + (r.runs === 1 ? ' run' : ' runs') +
+            (r.budget_usd != null ? ', cap ' + money(r.budget_usd) + ' each' : '') + '</span></span>' +
+            '<span class="amt">' + money(r.cost_usd) + '</span></div>' +
+            '<div class="bar" aria-hidden="true"><div style="width:' + cap + '%"></div></div></li>';
+        }).join('') + '</ul><p class="muted small" style="margin:10px 0 0"><a href="#/roles">See every role\'s budget</a></p>' : '') +
+      '</section>';
   }
 
   async function loadDoc(caseId, name) {
@@ -596,6 +606,51 @@
     }
   }
 
+  // ------------------------------------------------------------------ roles (read-only)
+  var rolesCache = null;
+  async function rolesPage() {
+    setNav('roles');
+    var data = rolesCache || (rolesCache = await call('/roles'));
+    var stages = (config.pipeline && config.pipeline.stages) || [];
+    var groups = stages.map(function (st) {
+      return { stage: st, roles: data.roles.filter(function (r) { return r.stage === st.id; }) };
+    }).filter(function (g) { return g.roles.length; });
+    var L = data.limits;
+    var perRound = data.roles.filter(function (r) { return r.stage === 'design'; })
+      .reduce(function (sum, r) { return sum + r.budget_usd; }, 0);
+    app.innerHTML =
+      '<div class="page-head"><div><h1>Roles</h1><div class="muted">What each agent does, the model it uses and how much it may spend. ' +
+      'Read-only: limits are changed in the catalogue and deployed.</div></div></div>' +
+      '<div class="limits">' +
+      '<div class="kpi strong"><div class="muted small">Budget per case</div><div class="n">' + money(L.case_budget_usd) + '</div><div class="muted small">Hard stop for everything one case spends</div></div>' +
+      '<div class="kpi"><div class="muted small">Design review rounds</div><div class="n">' + L.max_review_rounds + '</div><div class="muted small">Up to ' + money(perRound) + ' per round at the role caps</div></div>' +
+      '<div class="kpi"><div class="muted small">Retries for unusable output</div><div class="n">' + L.output_retries + '</div><div class="muted small">Never retried when a run hits its cap</div></div>' +
+      '</div>' +
+      '<div class="stage-wrap">' + groups.map(function (g) {
+        return '<section class="stage-group' + (g.roles.length > 1 ? ' wide' : '') + '" aria-labelledby="st-' + esc(g.stage.id) + '"><h2 id="st-' + esc(g.stage.id) + '">' + esc(g.stage.label) +
+          (g.stage.gate ? ' <span class="muted small" style="font-weight:400">then ' + esc(g.stage.gate.label) + '</span>' : '') + '</h2>' +
+          '<div class="role-grid">' + g.roles.map(roleCard).join('') + '</div></section>';
+      }).join('') + '</div>' +
+      '<details class="card house"><summary>House rules every agent follows</summary>' + markdown(data.house_rules) + '</details>';
+  }
+  function roleCard(r) {
+    var modelLabel = { opus: 'Claude Opus', sonnet: 'Claude Sonnet', haiku: 'Claude Haiku' }[r.model] || r.model;
+    return '<article class="card role-card"><div class="head"><div><h3>' + esc(r.label) + '</h3>' +
+      '<div class="part">' + esc(r.part) + (r.finding_prefix ? ' · findings ' + esc(r.finding_prefix) + '-n' : '') + '</div></div>' +
+      '<span class="pill ' + (r.model === 'opus' ? 'work' : 'grey') + '">' + esc(modelLabel) + '</span></div>' +
+      '<p style="margin:0">' + esc(r.description) + '</p>' +
+      '<div class="facts"><div class="fact"><div class="k">Budget per run</div><div class="v">' + money(r.budget_usd) + '</div></div>' +
+      '<div class="fact"><div class="k">Max turns</div><div class="v">' + esc(r.max_turns) + '</div></div>' +
+      '<div class="fact"><div class="k">Writes</div><div class="v small">' + esc(r.writes || 'Findings only') + '</div></div></div>' +
+      '<div><div class="muted small" style="margin-bottom:4px">Tools</div><div class="chips">' +
+      r.tools.map(function (t) { return '<span class="chip">' + esc(t) + '</span>'; }).join('') + '</div></div>' +
+      (r.reads.length ? '<div><div class="muted small" style="margin-bottom:4px">Reads</div><div class="chips">' +
+        r.reads.map(function (t) { return '<span class="chip">' + esc(t) + '</span>'; }).join('') + '</div></div>' : '') +
+      (r.specialists.length ? '<div><div class="muted small" style="margin-bottom:4px">Specialist subagents (count against this budget)</div><ul class="specialists">' +
+        r.specialists.map(function (sp) { return '<li><strong>' + esc(sp.name) + '</strong>: ' + esc(sp.description) + '</li>'; }).join('') + '</ul></div>' : '') +
+      '<details><summary>Full instructions</summary>' + markdown(r.instructions) + '</details></article>';
+  }
+
   // ------------------------------------------------------------------ routing
   async function route() {
     clearTimeout(pollTimer);
@@ -606,6 +661,8 @@
         await casePage(m[1]);
       } else if (hash === '#/new') {
         newPage();
+      } else if (hash === '#/roles') {
+        await rolesPage();
       } else {
         var f = /[?&]filter=([a-z]+)/.exec(hash);
         await listPage(f ? f[1] : 'all');

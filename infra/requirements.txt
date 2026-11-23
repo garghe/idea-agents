@@ -1,3 +1,4 @@
 aws-cdk-lib>=2.180
 constructs>=10
 pyyaml>=6.0
+jsonschema>=4.20
