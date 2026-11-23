@@ -453,21 +453,35 @@
     return '<section class="timeline" aria-label="Pipeline progress"><div class="tl" role="list">' + parts.join('') + '</div></section>';
   }
 
-  function docLabel(name) {
-    var map = { 'request.md': 'Request', '01-request-brief.md': 'Request brief', '02-business-case.md': 'Business case',
-      '03-requirements.md': 'Requirements', '04-design.md': 'Design', '05-backlog.json': 'Backlog',
-      '06-published.json': 'Published to Jira' };
-    if (map[name]) { return map[name]; }
-    var m = /^answers\/(\d+)-([a-z]+)(-feedback)?\.md$/.exec(name);
-    if (m) { return (m[3] ? 'Feedback ' : 'Answers ') + Number(m[1]); }
-    m = /^review\/round-(\d+)-change-list\.md$/.exec(name);
-    if (m) { return 'Review round ' + m[1]; }
-    return name;
+  // ------------------------------------------------------------------ documents (grouped by stage)
+  var ICONS = {
+    person: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="8" cy="5.5" r="2.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 14c.6-2.7 2.7-4.2 5.2-4.2s4.6 1.5 5.2 4.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    agent: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="2.5" y="4.5" width="11" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="9" r="1" fill="currentColor"/><circle cx="10" cy="9" r="1" fill="currentColor"/><path d="M8 4.5V2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    attachment: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M10.5 4.5 5.6 9.4a1.6 1.6 0 0 0 2.3 2.3l5-5a3 3 0 0 0-4.3-4.3l-5 5a4.4 4.4 0 0 0 6.2 6.2l4.2-4.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
+  };
+  var docItems = {};
+  var d_groups = [];
+  function itemIcon(it) { return it.type === 'attachment' ? 'attachment' : (it.kind === 'agent' ? 'agent' : (it.kind === 'system' ? 'agent' : 'person')); }
+  function itemMeta(it) {
+    var parts = [it.by || (it.kind === 'person' ? 'Person' : 'Agent')];
+    if (it.type === 'attachment') { parts.push(it.status === 'ready' ? (it.file_type || 'File') : (it.status === 'pending' ? 'Uploading' : 'Turned away')); }
+    else if (it.versions > 1) { parts.push(it.versions + ' versions'); }
+    if (it.at) { parts.push(fmtTime(it.at)); }
+    return parts.join(' · ');
   }
-  function docOrder(name) {
-    var order = ['request.md', '01-request-brief.md', '02-business-case.md', '03-requirements.md', '04-design.md', '05-backlog.json', '06-published.json'];
-    var i = order.indexOf(name);
-    return i >= 0 ? i * 100 : (/^review/.test(name) ? 450 : 50) + 1;
+  function docListHtml(groups) {
+    docItems = {};
+    return groups.map(function (g) {
+      return '<div class="doc-group"><h3>' + esc(g.label) + '</h3><ul>' + g.items.map(function (it) {
+        var inner = '<span class="ico ' + itemIcon(it) + '">' + ICONS[itemIcon(it)] + '</span><span class="txt"><span class="lbl">' + esc(it.label) +
+          '</span><span class="meta">' + esc(itemMeta(it)) + '</span></span>';
+        if (it.name && (it.type === 'document' || it.status === 'ready')) {
+          docItems[it.name] = it;
+          return '<li><button type="button" class="doc-item" data-doc="' + esc(it.name) + '">' + inner + '</button></li>';
+        }
+        return '<li><div class="doc-item static" title="' + esc(it.type === 'attachment' && it.status === 'ready' ? 'An image: agents open it directly' : '') + '">' + inner + '</div></li>';
+      }).join('') + '</ul></div>';
+    }).join('');
   }
 
   function actionHtml(d) {
@@ -595,7 +609,14 @@
 
   async function loadDoc(caseId, name) {
     var body = document.getElementById('doc-body');
-    document.querySelectorAll('.tab').forEach(function (t) { t.setAttribute('aria-selected', String(t.getAttribute('data-doc') === name)); });
+    document.querySelectorAll('.doc-item[data-doc]').forEach(function (t) {
+      if (t.getAttribute('data-doc') === name) { t.setAttribute('aria-current', 'true'); } else { t.removeAttribute('aria-current'); }
+    });
+    var it = docItems[name] || {};
+    var stage = ((d_groups || []).find(function (g) { return g.items.indexOf(it) >= 0; }) || {}).label;
+    document.getElementById('doc-head').innerHTML = it.label ? '<div><h3>' + esc(it.label) + '</h3><div class="muted small">' +
+      esc([it.by, stage ? stage + ' stage' : '', it.updated_at ? fmtTime(it.updated_at) : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+      (it.versions ? '<span class="pill grey">' + (it.versions > 1 ? 'Latest of ' + it.versions + ' versions' : '1 version') + '</span>' : '') : '';
     body.innerHTML = '<p class="muted">Loading…</p>';
     try {
       var doc = await call('/cases/' + encodeURIComponent(caseId) + '?doc=' + encodeURIComponent(name));
@@ -613,9 +634,12 @@
     var d = await call('/cases/' + encodeURIComponent(caseId));
     var c = d.case;
     var pillText = d.waiting_for;
-    var docs = d.documents.slice().sort(function (a, b) { return docOrder(a) - docOrder(b) || a.localeCompare(b); });
-    var main = docs.filter(function (n) { return /^0\d-/.test(n); });
-    var initial = keepDoc && docs.indexOf(keepDoc) >= 0 ? keepDoc : (main.length ? main[main.length - 1] : docs[0]);
+    d_groups = d.document_groups || [];
+    var all = [];
+    d_groups.forEach(function (g) { g.items.forEach(function (it) { if (it.name && (it.type === 'document' || it.status === 'ready')) { all.push(it); } }); });
+    var latestAgent = all.filter(function (it) { return it.kind === 'agent'; }).sort(function (a, b) { return (a.updated_at || '').localeCompare(b.updated_at || ''); }).pop();
+    var names = all.map(function (it) { return it.name; });
+    var initial = keepDoc && names.indexOf(keepDoc) >= 0 ? keepDoc : (latestAgent ? latestAgent.name : names[0]);
     app.innerHTML =
       '<div class="crumbs"><a href="#/cases">Cases</a> / ' + esc(c.id) + '</div>' +
       '<div class="page-head"><div style="min-width:0"><h1>' + esc(c.title) + '</h1><div class="muted">Requested by ' + esc(c.requester) +
@@ -624,13 +648,15 @@
       timelineHtml(d.progress) +
       '<div class="cols"><div class="col-main">' + actionHtml(d) +
       '<section class="card docs" aria-labelledby="docs-h"><div class="docs-head"><h2 id="docs-h">Documents</h2>' +
-      '<span class="muted small">Every version is kept</span></div>' +
-      '<div class="tabs" role="tablist">' + docs.map(function (n) {
-        return '<button type="button" role="tab" class="tab" data-doc="' + esc(n) + '" aria-selected="false">' + esc(docLabel(n)) + '</button>';
-      }).join('') + '</div><div class="doc-body" id="doc-body" role="tabpanel"></div></section></div>' +
+      '<span class="muted small">By stage, oldest first. Every version is kept.</span></div>' +
+      '<div class="doc-pane"><nav class="doc-list" aria-label="Case documents">' + docListHtml(d_groups) + '</nav>' +
+      '<div class="doc-view"><div class="doc-head" id="doc-head"></div><div class="doc-body" id="doc-body"></div></div></div>' +
+      '<div class="doc-key muted small"><span class="ico person">' + ICONS.person + '</span> Written by people' +
+      '<span class="ico agent">' + ICONS.agent + '</span> Written by an agent' +
+      '<span class="ico attachment">' + ICONS.attachment + '</span> Attached file</div></section></div>' +
       '<aside class="col-side">' + sideHtml(d) + '</aside></div>';
 
-    app.querySelectorAll('.tab').forEach(function (t) {
+    app.querySelectorAll('.doc-item[data-doc]').forEach(function (t) {
       t.addEventListener('click', function () { loadDoc(caseId, t.getAttribute('data-doc')); });
     });
     if (initial) { loadDoc(caseId, initial); }

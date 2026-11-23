@@ -78,7 +78,8 @@ class LocalPipeline:
         for q in questions:
             lines.append(f"- {q['id']} ({q['for']}): {q['question']}")
         lines += ["", "## Answer", "", text.strip(), ""]
-        self.store.write_doc(case_id, f"answers/{n:02d}-{case['stage']}.md", "\n".join(lines))
+        self.store.save_doc(case_id, f"answers/{n:02d}-{case['stage']}.md", "\n".join(lines),
+                            by=by, kind="person", stage=case["stage"])
         for q in questions:
             q.update(status="answered", answered_at=now_iso(), answered_by=by)
             self.store.put_blocker(case_id, q)
@@ -113,8 +114,9 @@ class LocalPipeline:
             self._advance(case, stage)
         else:  # send back: the comment becomes input, the stage runs again
             n = len(self.store.list_docs(case_id, "answers/")) + 1
-            self.store.write_doc(case_id, f"answers/{n:02d}-{stage.id}-feedback.md",
-                                 f"# Feedback from {by} on {stage.id}\n\n{comment.strip()}\n")
+            self.store.save_doc(case_id, f"answers/{n:02d}-{stage.id}-feedback.md",
+                                f"# Feedback from {by} on {stage.id}\n\n{comment.strip()}\n",
+                                by=by, kind="person", stage=stage.id)
             case["round"] += 1
             if pending["kind"] == "escalation":
                 # A person reopened the review: give the panel a fresh set of rounds.
@@ -136,8 +138,9 @@ class LocalPipeline:
             "by": by, "comment": comment.strip(), "at": now_iso(),
         })
         n = len(self.store.list_docs(case_id, "answers/")) + 1
-        self.store.write_doc(case_id, f"answers/{n:02d}-{plan['stage']}-reopen.md",
-                             f"# Reopened by {by}: what has changed\n\n{comment.strip()}\n")
+        self.store.save_doc(case_id, f"answers/{n:02d}-{plan['stage']}-reopen.md",
+                            f"# Reopened by {by}: what has changed\n\n{comment.strip()}\n",
+                            by=by, kind="person", stage=plan["stage"])
         case.update(status=RUNNING, pending=None, round=plan["round"], round_limit=plan["round_limit"])
         case.pop("finished_at", None)
         self.store.put_case(case)

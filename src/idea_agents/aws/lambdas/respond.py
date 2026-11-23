@@ -33,8 +33,8 @@ def reopen(s, case: dict, comment: str, by: str) -> dict:
     s.add_decision(case_id, {"kind": "reopen", "gate": None, "stage": plan["stage"], "outcome": api.REOPEN,
                              "by": by, "comment": comment, "at": now_iso()})
     n = len(s.list_docs(case_id, "answers/")) + 1
-    s.write_doc(case_id, f"answers/{n:02d}-{plan['stage']}-reopen.md",
-                f"# Reopened by {by}: what has changed\n\n{comment}\n")
+    s.save_doc(case_id, f"answers/{n:02d}-{plan['stage']}-reopen.md",
+               f"# Reopened by {by}: what has changed\n\n{comment}\n", by=by, kind="person", stage=plan["stage"])
     case.update(status=RUNNING, pending=None, round=plan["round"], round_limit=plan["round_limit"])
     case.pop("finished_at", None)
     case.pop("outcome", None)
@@ -86,7 +86,8 @@ def handler(event, context):
         lines = [f"# Answers from {by} ({now_iso()})", ""]
         lines += [f"- {q['id']} ({q['for']}): {q['question']}" for q in questions]
         lines += ["", "## Answer", "", data["answers"].strip(), ""]
-        s.write_doc(case_id, f"answers/{n:02d}-{pending.get('stage', case['stage'])}.md", "\n".join(lines))
+        stage = pending.get("stage", case["stage"])
+        s.save_doc(case_id, f"answers/{n:02d}-{stage}.md", "\n".join(lines), by=by, kind="person", stage=stage)
         for q in questions:
             q.update(status="answered", answered_at=now_iso(), answered_by=by)
             s.put_blocker(case_id, q)
@@ -99,8 +100,9 @@ def handler(event, context):
                                  "comment": comment, "at": now_iso()})
         if outcome == "send_back":
             n = len(s.list_docs(case_id, "answers/")) + 1
-            s.write_doc(case_id, f"answers/{n:02d}-{pending.get('stage')}-feedback.md",
-                        f"# Feedback from {by} on {pending.get('stage')}\n\n{comment}\n")
+            s.save_doc(case_id, f"answers/{n:02d}-{pending.get('stage')}-feedback.md",
+                       f"# Feedback from {by} on {pending.get('stage')}\n\n{comment}\n",
+                       by=by, kind="person", stage=pending.get("stage"))
         result = {"outcome": outcome}
 
     case.update(status=RUNNING, pending=None)

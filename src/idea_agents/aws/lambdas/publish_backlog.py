@@ -57,8 +57,9 @@ def handler(event, context):
     if not backlog.get("epics"):
         raise ValueError(f"case {case_id} has no backlog to publish")
     created = publish(backlog, secret_json("JIRA_SECRET_ARN"))
-    s.write_doc(case_id, "06-published.json", json.dumps({"published_at": now_iso(), "issues": created}, indent=2))
     case = s.get_case(case_id)
+    s.save_doc(case_id, "06-published.json", json.dumps({"published_at": now_iso(), "issues": created}, indent=2),
+               by="jira", kind="system", stage=case.get("stage"))
     case.update(status=DONE, finished_at=now_iso(), pending=None)
     s.put_case(case)
     notify(f"Case {case_id} ({case['title']}): backlog released, {len(created)} Jira issues.")

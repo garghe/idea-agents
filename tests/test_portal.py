@@ -206,3 +206,33 @@ def test_spend_by_role(store, catalogue):
         {"role": "designer", "label": "Designer", "runs": 2, "cost_usd": 5.5, "budget_usd": 8.0, "limit_hit": True},
         {"role": "chair", "label": "Review chair", "runs": 1, "cost_usd": 0.4, "budget_usd": 3.0, "limit_hit": False},
     ]
+
+
+# ------------------------------------------------------------------ documents grouped by stage
+def test_documents_are_grouped_by_stage_in_time_order(pipeline_factory, store, catalogue):
+    pipeline, _ = pipeline_factory()
+    case = pipeline.start("Clips", "Faster clips", "Head of Sport")
+    pipeline.answer(case["id"], "PL only", by="Head of Sport")
+    pipeline.decide(case["id"], "reject", by="PO", comment="Not now")
+    pipeline.reopen(case["id"], by="PO", comment="Budget found")
+    view = api.detail_view(store, case["id"], pipeline_summary(catalogue.pipeline))
+    groups = {g["label"]: [(i["label"], i["kind"], i["by"], i["versions"]) for i in g["items"]] for g in view["document_groups"]}
+    assert groups["Intake"] == [("Request", "person", "Head of Sport", 1),
+                                ("Request brief", "agent", "Intake agent", 2),
+                                ("Answers", "person", "Head of Sport", 1)]
+    assert groups["Value"] == [("Business case", "agent", "Value agent", 1)]
+    assert groups["Analysis"] == [("Requirements", "agent", "Analysis lead", 2),
+                                  ("Reopen comment", "person", "PO", 1)]
+    assert [g["label"] for g in view["document_groups"]] == ["Intake", "Value", "Analysis"]
+
+
+def test_documents_from_older_cases_are_placed_by_name(catalogue):
+    summary = pipeline_summary(catalogue.pipeline)
+    docs = ["request.md", "answers/01-intake.md", "answers/02-design-feedback.md", "answers/03-design-feedback.md",
+            "01-request-brief.md", "04-design.md", "review/round-1-change-list.md", "notes/custom-thing.md"]
+    groups = api.document_groups(docs, [], [], summary)
+    labels = {g["label"]: [i["label"] for i in g["items"]] for g in groups}
+    assert labels["Intake"] == ["Request", "Request brief", "Answers"]  # no times: request first, then by name
+    assert labels["Design"] == ["Design", "Feedback 1", "Feedback 2", "Review round 1"]
+    assert labels["Other"] == ["Custom thing"]
+    assert all(i["at"] is None and i["versions"] is None for g in groups for i in g["items"])

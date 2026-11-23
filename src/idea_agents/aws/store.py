@@ -8,6 +8,7 @@ DynamoDB layout (one table):
        BLOCKER#<id>                one question for the business
        DECISION#<at>#<n>           one gate or escalation decision
        ATTACH#<nnnn>               one attached file (the file itself is in S3 under uploads/)
+       DOCV#<at>#<name>            who wrote one version of a document, when, for which stage
 Each item keeps the full record as JSON in `data`, which avoids DynamoDB number conversions.
 
 This module imports only the standard library and boto3, so Lambdas can use it too.
@@ -151,6 +152,13 @@ class AwsCaseStore(CaseStore):
 
     def list_decisions(self, case_id: str) -> list[dict]:
         return self._query(case_id, "DECISION#")
+
+    # -------------------------------------------------- document versions
+    def add_doc_version(self, case_id: str, version: dict) -> None:
+        self._put(case_id, f"DOCV#{version['at']}#{version['name']}", version)
+
+    def list_doc_versions(self, case_id: str) -> list[dict]:
+        return self._query(case_id, "DOCV#")
 
     # -------------------------------------------------------- attachments
     @staticmethod

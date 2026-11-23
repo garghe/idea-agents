@@ -296,6 +296,9 @@ def test_aws_store_round_trip(monkeypatch):
         store.add_decision(cid, {"at": "2026-11-23T11:00:00+00:00", "outcome": "approve"})
         assert len(store.open_blockers(cid)) == 1 and len(store.list_decisions(cid)) == 1
         assert [c["id"] for c in store.list_cases()] == [cid]
+        store.save_doc(cid, "01-request-brief.md", "brief", by="intake", kind="agent", stage="intake")
+        versions = store.list_doc_versions(cid)
+        assert [(v["name"], v["kind"]) for v in versions] == [("request.md", "person"), ("01-request-brief.md", "agent")]
         with pytest.raises(KeyError):
             store.get_case("C-nope")
 

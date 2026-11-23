@@ -89,6 +89,21 @@ class CaseStore(ABC):
     @abstractmethod
     def list_decisions(self, case_id: str) -> list[dict]: ...
 
+    # --- who wrote each document version (for the portal's document list) --------
+    @abstractmethod
+    def add_doc_version(self, case_id: str, version: dict) -> None: ...
+
+    @abstractmethod
+    def list_doc_versions(self, case_id: str) -> list[dict]: ...
+
+    def save_doc(self, case_id: str, name: str, content: str, *, by: str, kind: str, stage: str | None) -> None:
+        """Write a document and record who wrote this version, when, and for which stage.
+
+        kind: "person" (request, answers, feedback, reopen comments), "agent" or "system".
+        """
+        self.write_doc(case_id, name, content)
+        self.add_doc_version(case_id, {"name": name, "by": by, "kind": kind, "stage": stage, "at": now_iso()})
+
     # --- attachments (files people attach; see idea_agents.attachments) ----------
     @abstractmethod
     def put_attachment(self, case_id: str, att: dict) -> None: ...
@@ -146,7 +161,7 @@ class CaseStore(ABC):
             "pending": None,
         }
         self.put_case(case)
-        self.write_doc(case["id"], "request.md", request_text)
+        self.save_doc(case["id"], "request.md", request_text, by=requester, kind="person", stage=first_stage)
         return case
 
     def open_findings(self, case_id: str, reviewer: str | None = None) -> list[dict]:
@@ -178,7 +193,7 @@ class LocalCaseStore(CaseStore):
         path = self._dir(case_id) / "records.json"
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
-        return {"runs": [], "findings": {}, "blockers": {}, "decisions": [], "attachments": {}}
+        return {"runs": [], "findings": {}, "blockers": {}, "decisions": [], "attachments": {}, "doc_versions": []}
 
     def _save_records(self, case_id: str, records: dict) -> None:
         path = self._dir(case_id) / "records.json"
@@ -257,6 +272,14 @@ class LocalCaseStore(CaseStore):
 
     def list_decisions(self, case_id: str) -> list[dict]:
         return self._records(case_id)["decisions"]
+
+    def add_doc_version(self, case_id: str, version: dict) -> None:
+        rec = self._records(case_id)
+        rec.setdefault("doc_versions", []).append(version)
+        self._save_records(case_id, rec)
+
+    def list_doc_versions(self, case_id: str) -> list[dict]:
+        return self._records(case_id).get("doc_versions", [])
 
     # attachments: records in records.json, files in uploads/<id>-<file>
     def put_attachment(self, case_id: str, att: dict) -> None:

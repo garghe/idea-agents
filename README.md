@@ -64,8 +64,10 @@ Screenshots from a local run on mock data (`python scripts/take_screenshots.py` 
 
 ![Case list](docs/screenshots/case-list.png)
 
-**A case at design sign-off.** The progress bar, the decision panel, the documents the agents wrote,
-the attachments (who attached each and which agents read it), the review findings and the activity log.
+**A case at design sign-off.** The progress bar, the decision panel, the case's documents grouped by
+stage in the order they happened (each marked as written by a person or an agent, with who, when and
+how many versions), the attachments (who attached each and which agents read it), the review findings
+and the activity log.
 Here a file arrived after the design ran, so the decision panel says the design agents have not read it.
 
 ![Case page at design sign-off](docs/screenshots/case-design-signoff.png)
@@ -106,7 +108,7 @@ review rounds and retries. Read-only: limits are changed in the catalogue and de
 | `.github/workflows/` | `tests.yml` runs the tests on every push; `deploy.yml` deploys to AWS after an approval. |
 | `scripts/take_screenshots.py` | Seeds mock cases and captures the portal screenshots above. |
 | `examples/requests/`, `examples/attachments/` | A sample business request and two sample attachments. |
-| `tests/` | 103 tests; no Claude or AWS calls needed. |
+| `tests/` | 105 tests; no Claude or AWS calls needed. |
 
 ## Run it locally (mock data, no LLM calls)
 
@@ -749,7 +751,7 @@ needs the signed-in user's Cognito ID token in the `Authorization` header.
 | `GET /api/roles` | | Every role: description, model, budget per run, turn limit, tools, reads and writes, specialists, instructions; plus the case limits and house rules |
 | `GET /api/cases` | | Cases with progress, who they wait for and spend, plus counts |
 | `POST /api/cases` | `{"title", "request", "requester", "attachments": [{"name", "size"}]}` (attachments optional) | `{"case_id", "uploads"}`: one upload target per file. A case with files starts once they are in (locally) or waits for them (AWS) |
-| `GET /api/cases/{id}` | | The case page: progress, questions, findings, attachments, activity, cost and spend by role |
+| `GET /api/cases/{id}` | | The case page: progress, questions, documents grouped by stage (who wrote each, when, how many versions), findings, attachments, activity, cost and spend by role |
 | `GET /api/cases/{id}?doc=attachments/A1.md` | | An attachment's extracted text |
 | `POST /api/cases/{id}/attachments` | `{"files": [{"name", "size"}]}` | `{"uploads": [{"id", "url", "method", "headers"}]}`. Then `PUT` each file to its `url` with those headers: on AWS a 15-minute signed S3 link, locally `/api/cases/{id}/attachments/{A1}/content` |
 | `GET /api/cases/{id}?doc=04-design.md` | | One document |
@@ -764,7 +766,7 @@ pip install -e ".[dev]" "moto[s3,dynamodb]" cfn-lint -r infra/requirements.txt
 pytest
 ```
 
-103 tests cover the catalogue, the roles summary, attachments (checks, extraction, what agents get, scans), the envelope and backlog rules, the path guard, the review routing,
+105 tests cover the catalogue, the roles summary, attachments (checks, extraction, what agents get, scans), the envelope and backlog rules, the path guard, the review routing,
 full pipeline runs (blockers, review rounds, conflicts, escalation, rejection, reopening, budget stop, spend caps), the API
 views, the local portal server end to end, mock-by-default local runs, the state machine, the runner
 entrypoint, the Lambdas, the S3/DynamoDB store (with moto), the CDK stack (synth, `cfn-lint` and the Well-Architected controls), and the CI/CD deploy role and workflow.

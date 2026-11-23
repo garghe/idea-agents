@@ -7,6 +7,8 @@ summary from `idea_agents.config.pipeline_summary`, passed in as a plain dict.
 
 from __future__ import annotations
 
+import re
+
 from .attachments import PENDING, READY, TYPE_LABELS
 from .store import (DONE, FAILED, NEW, REJECTED, RUNNING, WAITING_ANSWERS, WAITING_ESCALATION,
                     WAITING_GATE, CaseStore)
@@ -229,6 +231,100 @@ def unseen_at_gate(case: dict, attachments: list[dict], runs: list[dict]) -> lis
     return [f"{a['id']} {a['name']}" for a in attachments if a["status"] == READY and a["id"] not in seen]
 
 
+DOC_LABELS = {"request.md": "Request", "01-request-brief.md": "Request brief", "02-business-case.md": "Business case",
+              "03-requirements.md": "Requirements", "04-design.md": "Design", "05-backlog.json": "Backlog",
+              "06-published.json": "Published to Jira"}
+# Where the stock documents belong, for cases written before document versions were recorded.
+_STOCK_STAGES = {"01-request-brief.md": "intake", "02-business-case.md": "value", "03-requirements.md": "analysis",
+                 "04-design.md": "design", "05-backlog.json": "stories", "06-published.json": "stories"}
+_ANSWER = re.compile(r"^answers/(\d+)-([a-z0-9_]+?)(-feedback|-reopen)?\.md$")
+_ROUND = re.compile(r"^review/round-(\d+)-change-list\.md$")
+
+
+def _doc_guess(name: str, summary: dict) -> dict:
+    """Stage, kind and label from the document's name alone."""
+    ids = [s["id"] for s in summary["stages"]]
+    if name == "request.md":
+        return {"stage": ids[0], "kind": "person"}
+    m = _ANSWER.match(name)
+    if m:
+        return {"stage": m.group(2), "kind": "person"}
+    if _ROUND.match(name):
+        review = next((s["id"] for s in summary["stages"] if s.get("kind") == "review"), None)
+        return {"stage": review, "kind": "agent"}
+    return {"stage": _STOCK_STAGES.get(name), "kind": "agent"}
+
+
+def _doc_label(name: str, counters: dict) -> str:
+    if name in DOC_LABELS:
+        return DOC_LABELS[name]
+    m = _ANSWER.match(name)
+    if m:
+        what = {"-feedback": "Feedback", "-reopen": "Reopen comment"}.get(m.group(3) or "", "Answers")
+        counters[what] = counters.get(what, 0) + 1
+        return f"{what} {counters[what]}"
+    m = _ROUND.match(name)
+    if m:
+        return f"Review round {m.group(1)}"
+    stem = re.sub(r"^\d+-", "", name.rsplit("/", 1)[-1].rsplit(".", 1)[0])
+    return stem.replace("-", " ").capitalize()
+
+
+def _author(version: dict) -> str:
+    if version.get("kind") == "agent":
+        return ROLE_LABELS.get(version.get("by"), version.get("by") or "Agent")
+    if version.get("kind") == "system":
+        return {"jira": "Jira"}.get(version.get("by"), version.get("by") or "System")
+    return version.get("by") or "Someone"
+
+
+def document_groups(docs: list[str], versions: list[dict], attachments: list[dict], summary: dict) -> list[dict]:
+    """The case's documents and attachments, grouped by stage in pipeline order, in time order within each.
+
+    Each item says who wrote it (a person, an agent or the system), when it first appeared, when it last
+    changed and how many versions exist. Documents from before versions were recorded get their stage
+    and kind from their name, and no time.
+    """
+    by_name: dict[str, list[dict]] = {}
+    for v in sorted(versions, key=lambda v: v.get("at") or ""):
+        by_name.setdefault(v["name"], []).append(v)
+    items = []
+    for name in docs:
+        vs = by_name.get(name) or []
+        first, last = (vs[0], vs[-1]) if vs else ({}, {})
+        guess = _doc_guess(name, summary)
+        items.append({
+            "type": "document", "name": name, "kind": first.get("kind") or guess["kind"],
+            "stage": first.get("stage") or guess["stage"], "by": _author(first) if vs else None,
+            "at": first.get("at"), "updated_at": last.get("at"), "versions": len(vs) or None,
+        })
+    for a in attachments:
+        items.append({
+            "type": "attachment", "name": a.get("text_doc"), "id": a["id"], "kind": "person",
+            "stage": a.get("stage_at_upload"), "by": a.get("added_by"), "at": a.get("added_at"),
+            "updated_at": a.get("added_at"), "versions": 1, "status": a["status"],
+            "label": f"{a['id']} · {a['name']}", "file_type": TYPE_LABELS.get(a.get("ext"), a.get("ext")),
+        })
+    # Time order; a request comes before the files sent with it.
+    items.sort(key=lambda i: (i["at"] is None, i["at"] or "", i["type"] == "attachment",
+                              i["name"] != "request.md", i["name"] or ""))
+    counters: dict = {}
+    for i in items:
+        if i["type"] == "document":
+            i["label"] = _doc_label(i["name"], counters)
+    for i in items:  # number answers, feedback and reopen comments only when there is more than one
+        base = re.sub(r" \d+$", "", i["label"])
+        if i["type"] == "document" and base != i["label"] and counters.get(base) == 1:
+            i["label"] = base
+
+    groups = [{"stage": s["id"], "label": s["label"], "items": []} for s in summary["stages"]]
+    index = {g["stage"]: g for g in groups}
+    other = {"stage": None, "label": "Other", "items": []}
+    for i in items:
+        index.get(i["stage"], other)["items"].append(i)
+    return [g for g in groups + [other] if g["items"]]
+
+
 def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
     case = store.get_case(case_id)
     runs = store.list_runs(case_id)
@@ -237,6 +333,7 @@ def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
     open_questions = [b for b in blockers if b["status"] == "open"]
     findings = store.list_findings(case_id)
     attachments = store.list_attachments(case_id)
+    docs = store.list_docs(case_id)
     order = {"open": 0, "closed": 1, "duplicate": 2}
     findings.sort(key=lambda f: (order.get(f["status"], 3), {"blocker": 0, "major": 1, "minor": 2}.get(f["severity"], 3), f["id"]))
     stage_runs = [r for r in runs if r.get("stage") == case["stage"] and r.get("status") != "invalid"]
@@ -248,7 +345,9 @@ def detail_view(store: CaseStore, case_id: str, summary: dict) -> dict:
         "open_questions": open_questions,
         "findings": findings,
         "decisions": decisions,
-        "documents": [d for d in store.list_docs(case_id) if not d.startswith("attachments/")],
+        "documents": [d for d in docs if not d.startswith("attachments/")],
+        "document_groups": document_groups([d for d in docs if not d.startswith("attachments/")],
+                                           store.list_doc_versions(case_id), attachments, summary),
         "attachments": attachment_rows(attachments, runs, summary),
         "attachments_pending": sum(a["status"] == PENDING for a in attachments),
         "can_attach": case["status"] != DONE,

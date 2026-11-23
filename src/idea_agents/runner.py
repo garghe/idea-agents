@@ -290,7 +290,7 @@ class StageRunner:
     def _save(self, case_id, stage_id, role: Role, round_no, ws: Path, envelope: dict, *, is_chair):
         if role.writes:
             content = (ws / "output" / role.writes).read_text(encoding="utf-8")
-            self.store.write_doc(case_id, role.writes, content)
+            self.store.save_doc(case_id, role.writes, content, by=role.name, kind="agent", stage=stage_id)
 
         existing_blockers = len(self.store.list_blockers(case_id))
         for i, b in enumerate(envelope.get("blockers") or [], start=1):
@@ -305,7 +305,7 @@ class StageRunner:
         for resp in envelope.get("responses") or []:
             self._apply_designer_response(case_id, resp, round_no)
         if is_chair:
-            self._apply_chair(case_id, envelope, round_no)
+            self._apply_chair(case_id, envelope, round_no, stage_id)
 
     def _save_review(self, case_id: str, role: Role, round_no: int, envelope: dict) -> None:
         all_findings = self.store.list_findings(case_id)
@@ -338,7 +338,7 @@ class StageRunner:
                          responded_round=round_no)
                 self.store.put_finding(case_id, f)
 
-    def _apply_chair(self, case_id: str, envelope: dict, round_no: int) -> None:
+    def _apply_chair(self, case_id: str, envelope: dict, round_no: int, stage_id: str | None = None) -> None:
         chair = envelope.get("chair") or {}
         findings = {f["id"]: f for f in self.store.list_findings(case_id)}
         for group in chair.get("duplicates", []):
@@ -351,5 +351,6 @@ class StageRunner:
                     self.store.put_finding(case_id, f)
         if chair.get("change_list"):
             body = "\n".join(f"{i}. {c}" for i, c in enumerate(chair["change_list"], start=1))
-            self.store.write_doc(case_id, f"review/round-{round_no}-change-list.md",
-                                 f"# Review round {round_no}: change list\n\n{body}\n")
+            self.store.save_doc(case_id, f"review/round-{round_no}-change-list.md",
+                                f"# Review round {round_no}: change list\n\n{body}\n",
+                                by="chair", kind="agent", stage=stage_id)
