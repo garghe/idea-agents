@@ -784,3 +784,7 @@ Built and tested without calling Claude or deploying to AWS. Before relying on i
 Not built yet: who-may-approve rules (today any signed-in user can answer or decide, and every action
 is recorded with their name), reminders and escalation timers for slow answers (a case waits up to
 30 days, then stops), Teams approval cards, a cost dashboard, and reading standards from Confluence.
+
+## Licence
+
+MIT: see [LICENSE](LICENSE).
